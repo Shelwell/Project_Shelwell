@@ -132,10 +132,30 @@ if st.session_state.processing:
         if response.status_code == 200:
             result = response.json()
             assistant_reply = result.get("message", {}).get("content", "").strip()
+
+            # ★ 清洗：把字面的 \n 转为真正的换行，并去掉角色标签
+            assistant_reply = assistant_reply.replace("\\n", "\n")
+            # 去掉可能出现的角色标签
+            for tag in ["用户：", "用户:", "Shelwell：", "Shelwell:", "你：", "你:"]:
+                # 只在行首出现时去掉，避免误伤正文
+                assistant_reply = "\n".join(
+                    line[len(tag):] if line.startswith(tag) else line
+                    for line in assistant_reply.split("\n")
+                )
+            assistant_reply = assistant_reply.strip()
+
             if not assistant_reply:
                 assistant_reply = "（Shelwell 似乎走神了，能再说一遍吗？）"
                 print("[Warning] Ollama 返回空回复")
+                
         else:
+            # 打印详细的错误信息
+            try:
+                error_detail = response.json()
+            except Exception:
+                error_detail = response.text
+            print(f"[Ollama Error] 状态码 {response.status_code}")
+            print(f"[Ollama Error] 详情: {error_detail}")
             assistant_reply = f"⚠️ 状态码 {response.status_code}，请检查Ollama服务。"
 
     except requests.exceptions.ConnectionError:
