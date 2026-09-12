@@ -1,0 +1,37 @@
+# ===== 虚拟环境 =====
+shelwell_train/
+Shelwell_venv/
+venv/
+env/
+prthon=3.11/
+
+# ===== 模型文件 =====
+Ollama_models/
+*.gguf
+*.safetensors
+*.bin
+
+# ===== 日志 =====
+logs/
+*.log
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ===== 向量数据库（二进制且可能很大，建议忽略） =====
+memory/vector_store/chroma_db/
+memory/
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== IDE =====
+.idea/
+.vscode/
+大纲.txt/

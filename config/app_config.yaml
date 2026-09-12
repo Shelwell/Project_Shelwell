@@ -1,0 +1,41 @@
+# ============================================================
+# Shelwell 全局配置
+# 换模型、调参数，只需修改此文件
+# ============================================================
+
+# ---------- 模型配置 ----------
+model:
+  base: "qwen3.5:9b"               # 基座模型（Ollama中的名字）
+  persona: "shelwell-persona"       # 挂载LoRA后的人格模型名（ollama create 后的名字）
+  embedding: "nomic-embed-text"     # 用于记忆向量化
+
+# ---------- Ollama 服务 ----------
+ollama:
+  url: "http://localhost:11434"
+  chat_timeout: 300                 # 对话请求超时（秒）
+  embedding_timeout: 30             # 向量化请求超时（秒）
+
+# ---------- 推理参数 ----------
+generation:
+  temperature: 0.7
+  num_predict: 1024                 # 单次生成最大token数
+  num_ctx: 8192                     # 上下文窗口大小
+  think: true                      # 是否启用Qwen3的思考模式
+
+# ---------- 上下文管理 ----------
+context:
+  max_length: 30                    # 短期记忆保留最近N条
+  memory_enabled: true              # 是否启用长期记忆
+
+# ---------- 记忆检索 ----------
+memory:
+  top_k: 3                          # 每次检索返回条数
+  min_similarity: 0.35              # 相似度阈值（0-1，越低越宽松）
+  collection_name: "shelwell_memory"
+  bubble_separator: "\n"            # 多气泡消息的分隔符
+
+# ---------- UI ----------
+ui:
+  page_title: "Shelwell"
+  page_icon: "💬"
+  welcome_message: "你好呀！我是 Shelwell，很高兴认识你。今天想聊点什么呢？"
