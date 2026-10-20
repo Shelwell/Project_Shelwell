@@ -12,18 +12,45 @@ from datetime import datetime
 IGNORE_DIRS = {
     ".git",
     "__pycache__",
-    "Shelwell_venv",
+    ".venv",
+    ".venv-train",
+    "venv",
+    "env",
+    "shelwell_venv",
     "shelwell_train",
+    "python=3.11",
+    "models",
+    "Ollama_models",
+    "data",
+    "memory",
+    "logs",
+    "tools",
     "blobs",
     "manifests",
-    "logs",
     "chroma_db",
     ".pytest_cache",
     ".mypy_cache",
+    ".ruff_cache",
     ".idea",
     ".vscode",
     "Lib",
-    "Scripts"
+    "Scripts",
+    "Include",
+    "site-packages",
+    "dist",
+    "build",
+    "*.egg-info",
+}
+
+# 忽略的大文件（不扫描、不显示）
+IGNORE_FILES = {
+    "*.gguf",
+    "*.safetensors",
+    "*.bin",
+    "*.pt",
+    "*.pth",
+    "*.onnx",
+    "*.zip",
 }
 
 # 忽略所有以 . 开头的隐藏目录（包括 .git 等，上面已列出的也会被覆盖）
@@ -40,6 +67,14 @@ def should_ignore_dir(dir_name: str) -> bool:
         return True
     if IGNORE_HIDDEN_DIRS and dir_name.startswith("."):
         return True
+    return False
+
+
+def should_ignore_file(file_name: str) -> bool:
+    import fnmatch
+    for pat in IGNORE_FILES:
+        if fnmatch.fnmatch(file_name.lower(), pat.lower()):
+            return True
     return False
 
 
@@ -64,6 +99,8 @@ def build_tree(root_path: Path, current_path: Path = None, prefix: str = "", is_
     for entry in entries:
         if entry.is_dir() and should_ignore_dir(entry.name):
             continue
+        if entry.is_file() and should_ignore_file(entry.name):
+            continue
         filtered.append(entry)
 
     for i, entry in enumerate(filtered):
@@ -77,7 +114,7 @@ def build_tree(root_path: Path, current_path: Path = None, prefix: str = "", is_
             new_prefix = prefix + ("    " if is_last_entry else "│   ")
 
         if is_root:
-            lines.append(f"{entry.name}/")
+            lines.append(f"{entry.name}/" if entry.is_dir() else entry.name)
         else:
             lines.append(f"{prefix}{connector}{entry.name}{'/' if entry.is_dir() else ''}")
 

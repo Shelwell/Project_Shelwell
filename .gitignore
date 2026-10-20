@@ -1,37 +1,79 @@
-# ===== 虚拟环境 =====
-shelwell_train/
-Shelwell_venv/
+# ============================================================
+# Shelwell .gitignore
+# 规则：虚拟环境 / 依赖产物 / 模型权重 / 运行时数据 / 缓存 一律不入库
+# ============================================================
+
+# ---------- 虚拟环境 ----------
+.venv/
+.venv-train/
 venv/
 env/
-prthon=3.11/
+shelwell_venv/
+shelwell_train/
+python=3.11/
 
-# ===== 模型文件 =====
+# ---------- Python 缓存与构建产物 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---------- 依赖锁的临时文件 ----------
+*.lock.tmp
+pip-log.txt
+
+# ---------- 模型权重 ----------
+models/
 Ollama_models/
 *.gguf
 *.safetensors
 *.bin
+*.pt
+*.pth
+*.onnx
 
-# ===== 日志 =====
+# ---------- 训练数据与产物 ----------
+data/
+!data/.gitkeep
+
+# ---------- 运行时数据 ----------
+memory/
 logs/
 *.log
 
-# ===== Python 缓存 =====
-__pycache__/
-*.py[cod]
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
+# ---------- 数据库 ----------
+*.db
+*.sqlite
+*.sqlite3
 
-# ===== 向量数据库（二进制且可能很大，建议忽略） =====
-memory/vector_store/chroma_db/
-memory/
+# ---------- 第三方工具（外置到 E:\Tools） ----------
+tools/
 
-# ===== 系统文件 =====
+# ---------- IDE / 编辑器 ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ---------- 操作系统 ----------
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# ===== IDE =====
-.idea/
-.vscode/
-大纲.txt/
+# ---------- 本地配置覆盖 ----------
+config/local_*.yaml
+.env
+.env.local
+
+# ---------- 临时文件 ----------
+*.tmp
+*.bak
+*~
