@@ -198,9 +198,15 @@ E:\Shelwell├── .venv/                    # 运行环境（Python 3.12.7，
 
 ## 10. 当前待办（按优先级）
 
-1. **训练集**：补到 300-500 条（进行中）
-2. **训练方案**：本地 12B QLoRA 受显存限制，待定（降级 7B 或上云）
-3. **L2 封装**：抽出 `ollama_client.py`，消除 `memory_retriever` 里的直接 requests
-4. **L4 编排**：建 `orchestrator.py`，把 `app/main.py` 里的流程逻辑下沉
-5. **QQ 接入**：NapCat + OneBot 适配层
-6. **视觉/表情**：方案待定，先留接口
+已完成：
+- [x] 环境重构：运行环境统一 `.venv`（3.12.7），依赖锁版本
+- [x] L4 编排层：`backend/orchestrator.py`，接管上下文/推理/归档
+- [x] L5 QQ 接入：`adapters/qq_bot/main.py`，NapCat 反向 WS，per-session 缓存
+
+进行中 / 待办：
+1. **训练集**：补到 300-500 条（现有 50 条 + 提示词文件已备）
+2. **训练方案**：本地 12B QLoRA 受 12GB 显存限制，待定（降级 7B 或上云）
+3. **L2 模型层封装**：抽出 `backend/llm/ollama_client.py`，消除 orchestrator 里的直接 requests
+4. **人格 LoRA 挂载**：训练产出后接入 Ollama，切换 `model.persona`
+5. **视觉/表情包**：方案待定，先留接口（`backend/vision_pipeline.py`、`sticker_manager.py`）
+6. **QQ 多用户验证**：多人同时聊，验证 session 隔离和记忆正确性

@@ -4,7 +4,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.context_manager import ContextManager
+from backend.orchestrator import Orchestrator
 from backend.config_loader import get   # ★ 新增
 
 # ========== 页面配置 ==========
@@ -31,11 +31,8 @@ if "messages" not in st.session_state:
 if "processing" not in st.session_state:
     st.session_state.processing = False
 
-if "context_manager" not in st.session_state:
-    st.session_state.context_manager = ContextManager(
-        max_context_length=get("context.max_length", 30),
-        memory_enabled=get("context.memory_enabled", True)
-    )
+if "orchestrator" not in st.session_state:
+    st.session_state.orchestrator = Orchestrator()
 
 # ========== 标题区域 ==========
 has_started = any(msg["role"] == "user" for msg in st.session_state.messages)
@@ -87,7 +84,7 @@ if prompt and not st.session_state.processing:
 
 # ========== 处理 AI 回复 ==========
 if st.session_state.processing:
-    context_mgr = st.session_state.context_manager
+    orch = st.session_state.orchestrator
 
     current_query = None
     for msg in reversed(st.session_state.messages):
@@ -95,87 +92,23 @@ if st.session_state.processing:
             current_query = msg["content"]
             break
 
-    try:
-        recent_messages = context_mgr.prepare_context(
-            st.session_state.messages,
-            current_query=current_query
-        )
-    except Exception as e:
-        print(f"[Context] 记忆检索失败，降级为纯上下文: {e}")
-        recent_messages = st.session_state.messages[-get("context.max_length", 30):]
+    result = orch.chat(
+        st.session_state.messages,
+        session_id="default",
+        current_query=current_query,
+    )
 
-    try:
-        stats = context_mgr.get_stats(st.session_state.messages)
-        print(f"[Context] 消息: {stats['context_used']}/{stats['max_allowed']} | "
-              f"记忆库总数: {stats['total_memories']}")
-    except Exception:
-        pass
-
-    # ★ 从配置读取模型名、URL、推理参数
-    try:
-        response = requests.post(
-            f"{get('ollama.url', 'http://localhost:11434')}/api/chat",
-            json={
-                "model": get("model.base", "qwen3.5:9b"),
-                "messages": recent_messages,
-                "think": get("generation.think", False),
-                "stream": False,
-                "options": {
-                    "num_ctx": get("generation.num_ctx", 8192),
-                    "temperature": get("generation.temperature", 0.7),
-                    "num_predict": get("generation.num_predict", 1024)
-                }
-            },
-            timeout=get("ollama.chat_timeout", 300)
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            assistant_reply = result.get("message", {}).get("content", "").strip()
-
-            # ★ 清洗：把字面的 \n 转为真正的换行，并去掉角色标签
-            assistant_reply = assistant_reply.replace("\\n", "\n")
-            # 去掉可能出现的角色标签
-            for tag in ["用户：", "用户:", "Shelwell：", "Shelwell:", "你：", "你:"]:
-                # 只在行首出现时去掉，避免误伤正文
-                assistant_reply = "\n".join(
-                    line[len(tag):] if line.startswith(tag) else line
-                    for line in assistant_reply.split("\n")
-                )
-            assistant_reply = assistant_reply.strip()
-
-            if not assistant_reply:
-                assistant_reply = "（Shelwell 似乎走神了，能再说一遍吗？）"
-                print("[Warning] Ollama 返回空回复")
-                
+    if result["ok"]:
+        assistant_reply = result["reply"]
+    else:
+        err = result.get("error") or "unknown"
+        if "Connection" in err or "11434" in err:
+            assistant_reply = "无法连接Ollama，请确认服务已启动。"
+        elif "Timeout" in err or "timeout" in err.lower():
+            assistant_reply = "回复生成时间过长，请稍后重试。"
         else:
-            # 打印详细的错误信息
-            try:
-                error_detail = response.json()
-            except Exception:
-                error_detail = response.text
-            print(f"[Ollama Error] 状态码 {response.status_code}")
-            print(f"[Ollama Error] 详情: {error_detail}")
-            assistant_reply = f"⚠️ 状态码 {response.status_code}，请检查Ollama服务。"
-
-    except requests.exceptions.ConnectionError:
-        assistant_reply = "⚠️ 无法连接Ollama，请确认服务已启动。"
-    except requests.exceptions.ReadTimeout:
-        assistant_reply = "⚠️ 回复生成时间过长，请稍后重试或简化问题。"
-    except Exception as e:
-        assistant_reply = f"⚠️ 发生错误：{str(e)}"
+            assistant_reply = f"发生错误：{err}"
 
     st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
-
-    if current_query and assistant_reply and not assistant_reply.startswith("⚠️"):
-        try:
-            context_mgr.archive_turn(
-                user_msg=current_query,
-                ai_msg=assistant_reply,
-                session_id="default"
-            )
-        except Exception as e:
-            print(f"[Memory] 归档失败（不影响对话）: {e}")
-
     st.session_state.processing = False
     st.rerun()

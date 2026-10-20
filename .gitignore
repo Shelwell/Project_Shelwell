@@ -77,3 +77,8 @@ config/local_*.yaml
 *.tmp
 *.bak
 *~
+# ---------- QQ 接入运行时数据 ----------
+adapters/qq_bot/qq_data/
+adapters/qq_bot/napcat_data/
+adapters/qq_bot/*.log
+adapters/qq_bot/*.err
