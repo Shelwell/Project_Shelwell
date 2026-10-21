@@ -2,10 +2,9 @@
 # 职责：L4 编排层——一次对话的完整流程
 # 收消息 → 建上下文 → 调模型 → 清洗回复 → 归档 → 返回
 
-import requests
-
 from backend.config_loader import get
 from backend.context_manager import ContextManager
+from backend.llm import provider
 
 
 class Orchestrator:
@@ -45,7 +44,15 @@ class Orchestrator:
 
         # 1. 构建上下文（短期 + 长期记忆 + 人格指令）
         try:
-            prepared = self.context.prepare_context(messages, current_query=current_query)
+            try:
+                from backend.runtime_config import get_runtime
+                _prov = (get_runtime().get("active.provider") or "ollama").strip()
+            except Exception:
+                _prov = "ollama"
+            prepared = self.context.prepare_context(
+                messages, current_query=current_query, session_id=session_id,
+                system_as_role=(_prov == "openai_compatible"),
+            )
         except Exception as e:
             print(f"[Orchestrator] 上下文构建失败，降级为纯上下文: {e}")
             prepared = messages[-get("context.max_length", 30):]
@@ -73,24 +80,8 @@ class Orchestrator:
         return {"reply": reply, "ok": True, "error": None}
 
     def _call_model(self, prepared_messages: list) -> str:
-        """调用 Ollama chat 接口，返回原始文本"""
-        url = f"{get('ollama.url', 'http://localhost:11434')}/api/chat"
-        payload = {
-            "model": get("model.base", "qwen3.5:9b"),
-            "messages": prepared_messages,
-            "think": get("generation.think", False),
-            "stream": False,
-            "options": {
-                "num_ctx": get("generation.num_ctx", 8192),
-                "temperature": get("generation.temperature", 0.7),
-                "num_predict": get("generation.num_predict", 1024),
-            },
-        }
-        resp = requests.post(url, json=payload, timeout=get("ollama.chat_timeout", 300))
-        if resp.status_code != 200:
-            detail = resp.text[:300]
-            raise RuntimeError(f"status={resp.status_code} detail={detail}")
-        return resp.json().get("message", {}).get("content", "")
+        """调用 L2 provider，返回原始文本"""
+        return provider.chat(prepared_messages)
 
     def _clean_reply(self, text: str) -> str:
         """清洗：字面 \\n 转换、去角色标签、去首尾空白"""

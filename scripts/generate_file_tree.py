@@ -28,6 +28,8 @@ IGNORE_DIRS = {
     "blobs",
     "manifests",
     "chroma_db",
+    "qq_data",
+    "napcat_data",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",

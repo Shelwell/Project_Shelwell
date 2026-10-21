@@ -1,0 +1,25 @@
+# 运行期配置模板。复制为 runtime.yaml 后填写；runtime.yaml 已被 gitignore
+active:
+  persona: shelwell_persona
+  facts: shelwell_facts
+  lora: null
+  provider: openai_compatible
+  model: deepseek-chat
+  plugins: []
+generation:
+  temperature: null
+  num_ctx: null
+  num_predict: null
+providers:
+  openai_compatible:
+    base_url: https://api.deepseek.com
+    api_key: ''
+    model: deepseek-flash
+    timeout: 120
+    preset: deepseek
+    reasoning_effort: low
+    vision_enabled: false
+context:
+  compress_enabled: false
+  compress_threshold: 20
+  compress_keep_recent: 8

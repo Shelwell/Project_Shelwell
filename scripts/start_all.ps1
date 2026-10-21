@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0) { Log "ERROR: Docker 引擎未就绪"; exit 1 }
 Log "Docker 引擎就绪"
 
 # ---------- 2. Windows 服务 ----------
-foreach ($svc in @("ShelwellOllama", "ShelwellQQBot")) {
+foreach ($svc in @("ShelwellOllama", "ShelwellQQBot", "ShelwellConsole")) {
     $state = (& sc.exe query $svc 2>&1 | Select-String "STATE").ToString()
     if ($state -match "RUNNING") { Log "$svc 已在运行" }
     else {

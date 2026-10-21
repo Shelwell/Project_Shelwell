@@ -101,7 +101,7 @@ class MemoryRetriever:
         except Exception as e:
             print(f"[Memory] 向量化失败，已仅归档JSONL: {e}")
     
-    def search(self, query: str, top_k: int = None, min_similarity: float = None):
+    def search(self, query: str, top_k: int = None, min_similarity: float = None, session_id: str = None):
         """
         检索与 query 相关的历史记忆
         返回: [{"content": ..., "metadata": ..., "similarity": ...}, ...]
@@ -116,10 +116,13 @@ class MemoryRetriever:
         
         try:
             query_embedding = self._get_embedding(query)
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(top_k, self.collection.count())
-            )
+            query_kwargs = {
+                "query_embeddings": [query_embedding],
+                "n_results": min(top_k, self.collection.count()),
+            }
+            if session_id:
+                query_kwargs["where"] = {"session_id": session_id}
+            results = self.collection.query(**query_kwargs)
         except Exception as e:
             print(f"[Memory] 检索失败: {e}")
             return []

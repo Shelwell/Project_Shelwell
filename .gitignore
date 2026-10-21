@@ -82,3 +82,10 @@ adapters/qq_bot/qq_data/
 adapters/qq_bot/napcat_data/
 adapters/qq_bot/*.log
 adapters/qq_bot/*.err
+# ---------- 打包产物 ----------
+dist/
+build/
+*.spec.bak
+
+# ---------- 运行期配置（含 API 密钥，严禁入库） ----------
+config/runtime.yaml
