@@ -184,6 +184,29 @@ E:\Shelwell├── .venv/                    # 运行环境（Python 3.12.7，
 
 ---
 
+## 8.5 部署与运维（Windows 服务化）
+
+Shelwell 常驻运行由 Windows 服务托管，不依赖终端窗口。
+
+| 组件 | 托管方式 | 自启 | 崩溃恢复 |
+|---|---|---|---|
+| Ollama | Windows 服务 `ShelwellOllama`（NSSM） | 自动 | NSSM 5 秒后重启 |
+| QQ 适配层 | Windows 服务 `ShelwellQQBot`（NSSM） | 自动 | NSSM 5 秒后重启 |
+| NapCat | Docker 容器 `napcat`，`--restart=always` | Docker Desktop 自启 | 进程崩溃自动重启 |
+| Docker Desktop | 用户登录自启 | 是 | — |
+
+**启动脚本**：`scripts/start_all.ps1` 只做“检查并拉起”，不常驻。首次部署、手动恢复时运行。
+
+**日志位置**：
+- `logs/launcher.log` — 启动脚本
+- `logs/ollama.log` / `logs/ollama.err.log` — Ollama 服务
+- `logs/qq_bot.log` / `logs/qq_bot.err.log` — QQ 适配层
+
+**服务管理命令**：sc query ShelwellOllamasc query ShelwellQQBotnssm restart ShelwellQQBottext复制下载
+**掉线处理（重要）**：
+- 进程崩溃 → NSSM 或 Docker 自动恢复，无需干预。
+- **QQ 被腾讯风控踢下线 → 无自动恢复手段，必须在 NapCat WebUI（`http://127.0.0.1:6099/webui`）重新扫码**。这是协议端方案的固有限制，不是配置问题。
+
 ## 9. 红线
 
 - 禁止 L5 接入层直接调 L2/L1
