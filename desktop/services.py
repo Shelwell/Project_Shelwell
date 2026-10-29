@@ -95,7 +95,6 @@ def collect_status() -> dict:
     return {
         "ShelwellOllama": service_state("ShelwellOllama"),
         "ShelwellQQBot": service_state("ShelwellQQBot"),
-        "ShelwellConsole": service_state("ShelwellConsole"),
         "napcat": docker_running(),
         "port_11434": port_open(11434),
         "port_8765": port_open(8765),
@@ -427,7 +426,7 @@ def start_all_services() -> str:
 
     # 2. Windows 服务
     log("[2/3] 启动 Shelwell 服务…")
-    for svc in ("ShelwellOllama", "ShelwellQQBot", "ShelwellConsole"):
+    for svc in ("ShelwellOllama", "ShelwellQQBot"):
         st = service_state(svc)
         if st.upper() == "RUNNING":
             log(f"    {svc} 已在运行")

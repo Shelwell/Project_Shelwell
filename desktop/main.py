@@ -62,7 +62,6 @@ class HomePage(QWidget):
         items = [
             ("ShelwellOllama", "Ollama 服务"),
             ("ShelwellQQBot", "QQBot 服务"),
-            ("ShelwellConsole", "Console 服务"),
             ("napcat", "NapCat 容器"),
             ("port_11434", "端口 11434"),
             ("port_8765", "端口 8765"),
