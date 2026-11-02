@@ -76,6 +76,30 @@ class MemoryRetriever:
         """拉取群聊最近 N 条消息作为上下文"""
         return self._svc.get_group_context(channel_id, limit=limit)
 
+    # ============ 语义记忆 ============
+
+    def search_semantic(self, query: str, top_k: int = 5,
+                        min_similarity: float = 0.4, owner_id: str = "") -> list:
+        return self._svc.search_semantic(query, top_k=top_k,
+                                         min_similarity=min_similarity,
+                                         owner_id=owner_id)
+
+    def consolidate(self, session_filter: str = None, limit: int = 50,
+                    dry_run: bool = False) -> dict:
+        return self._svc.consolidate(session_filter=session_filter,
+                                     limit=limit, dry_run=dry_run)
+
+    def list_semantic_facts(self, page: int = 1, page_size: int = 20,
+                            owner_id: str = "", state: str = "",
+                            keyword: str = "") -> dict:
+        return self._svc.list_semantic_facts(page, page_size, owner_id, state, keyword)
+
+    def delete_semantic_fact(self, fact_id: str) -> bool:
+        return self._svc.delete_semantic_fact(fact_id)
+
+    def clear_semantic(self) -> int:
+        return self._svc.clear_semantic()
+
     # ============ 扩展能力 ============
 
     def import_jsonl(self, path: str, session_override: str = None) -> dict:

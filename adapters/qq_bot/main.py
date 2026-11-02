@@ -19,6 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from backend.orchestrator import Orchestrator
+from engagement import EngagementTracker
 from backend.config_loader import get
 
 logging.basicConfig(level=logging.INFO, format="[QQ] %(asctime)s %(message)s")
@@ -38,6 +39,8 @@ class QQBot:
         self.orchestrator = Orchestrator()
         self.group_enabled = get("qq_bot.group_enabled", True)
         self.trigger_keywords = get("qq_bot.trigger_keywords", []) or []
+        # 自动接话热度状态机
+        self.engagement = EngagementTracker(get("qq_bot.auto_engage", {}) or {})
         # 消息缓存：message_id -> {sender, text, time}，用于引用回复
         self.message_cache = OrderedDict()
         self.cache_max = 100
@@ -113,36 +116,78 @@ class QQBot:
         user_id = str(evt.get("user_id", ""))
         group_id = str(evt.get("group_id", "")) if msg_type == "group" else user_id
 
-        # 群聊：先归档（全量存储），再判断是否触发回复
+        # 群聊：先归档（全量存储），再判断是否回复
+        need_engage = False
         if msg_type == "group":
             if not self.group_enabled:
                 return
-            triggered = self.is_triggered(evt, text)
-            if not triggered:
-                # 未触发：只归档，不回复
+            # @ 或叫名字 = 强信号
+            at_me = self.is_at_me(evt, text)
+            is_q = self._is_question(text)
+            # 观察这条消息，更新热度
+            heat = self.engagement.observe(group_id, user_id, text,
+                                           is_at_me=at_me, is_question=is_q)
+            # 判断是否该接话
+            if at_me or self.engagement.should_engage(group_id, is_at_me=at_me):
+                need_engage = True
+                log.info("接话 [群%s] heat=%.1f at_me=%s", group_id, heat, at_me)
+            else:
+                # 不接：只归档
                 self.archive_only(evt, text)
                 return
 
         session_id = self.session_id(evt)
 
-        # 处理引用：被引用的消息内容拼到开头
+        # 处理引用：记录被引用内容，供 system 注入（不拼进 history）
         reply_id = self.extract_reply(evt.get("message"))
         quoted = None
-        if reply_id and reply_id in self.message_cache:
-            q = self.message_cache[reply_id]
-            quoted = q
-            text = f"[引用 {q['sender']}: {q['text']}]\n{text}"
+        if reply_id:
+            # 先查缓存
+            if reply_id in self.message_cache:
+                quoted = self.message_cache[reply_id]
+            else:
+                # 缓存未命中：调 API 拉取被引用的消息
+                try:
+                    msg_data = await self.call_action(
+                        "get_msg", {"message_id": reply_id}, timeout=8.0)
+                    if msg_data:
+                        sender = msg_data.get("sender") or {}
+                        quoted = {
+                            "sender": (sender.get("card") or sender.get("nickname")
+                                       or str(msg_data.get("user_id", ""))),
+                            "text": self._plain_text(msg_data.get("message")),
+                            "time": msg_data.get("time"),
+                        }
+                        # 补进缓存
+                        self.message_cache[reply_id] = quoted
+                        while len(self.message_cache) > self.cache_max:
+                            self.message_cache.popitem(last=False)
+                        log.info("引用缓存未命中，已从 API 拉取: %s", reply_id)
+                except Exception as e:
+                    log.warning("拉取引用消息失败: %s", e)
 
         log.info("收到 [%s] %s", session_id, text)
 
-        reply = await self.think(session_id, text, user_id, msg_type, group_id, evt)
-        await self.send_reply(evt, reply, reply_to=reply_id or None)
+        reply = await self.think(session_id, text, user_id, msg_type, group_id, evt,
+                                 quoted=quoted)
+        # 群聊被动回复：引用用户触发的那条消息本身，不 @ 人
+        # （@ 仅用于后续主动找人的功能）
+        if msg_type == "group":
+            trigger_mid = str(evt.get("message_id") or "")
+            final_reply_to = trigger_mid or None
+        else:
+            final_reply_to = None
+        await self.send_reply(evt, reply, reply_to=final_reply_to, at_user=None)
+        # 接话后热度减半 + 进入冷却
+        if msg_type == "group" and need_engage:
+            self.engagement.on_engaged(group_id)
 
     def _cache_message(self, evt):
         """缓存消息内容，供后续引用查询"""
         mid = evt.get("message_id")
         if not mid:
             return
+        mid = str(mid)   # 统一字符串，避免与 reply 段的 id 类型不匹配
         sender = evt.get("sender") or {}
         self.message_cache[mid] = {
             "sender": sender.get("card") or sender.get("nickname") or str(evt.get("user_id", "")),
@@ -178,9 +223,9 @@ class QQBot:
             return "".join(parts).strip()
         return ""
 
-    def is_triggered(self, evt, text):
-        """群聊判断是否触发响应：@机器人 或 命中关键词"""
-        # @ 检测：message 数组里有 at 类型的段且指向自己
+    def is_at_me(self, evt, text):
+        """判断是否是强信号：@我 或 叫名字（关键词）"""
+        # @ 检测
         message = evt.get("message")
         if isinstance(message, list):
             for seg in message:
@@ -188,7 +233,7 @@ class QQBot:
                     qq = str(seg.get("data", {}).get("qq", ""))
                     if qq == str(evt.get("self_id", "")):
                         return True
-        # 关键词检测（英文忽略大小写，中文子串）
+        # 关键词检测
         lower = text.lower()
         for kw in self.trigger_keywords:
             if kw.isascii():
@@ -198,6 +243,19 @@ class QQBot:
                 if kw in text:
                     return True
         return False
+
+    def _is_question(self, text):
+        """判断是否疑问句（热度加权用）"""
+        t = (text or "").strip()
+        if not t:
+            return False
+        if t.endswith("?") or t.endswith("？"):
+            return True
+        return any(k in t for k in ["吗", "呢", "怎么", "为什么", "什么", "哪"])
+
+    def is_triggered(self, evt, text):
+        """兼容旧调用：等价于 is_at_me"""
+        return self.is_at_me(evt, text)
 
     def archive_only(self, evt, text):
         """未触发的群消息：只归档不回复"""
@@ -219,14 +277,30 @@ class QQBot:
         return f"qqg:{evt['group_id']}:{evt['user_id']}"
 
     async def think(self, session_id, text, speaker_id="", channel_type="private",
-                    channel_id="", evt=None):
+                    channel_id="", evt=None, quoted=None):
         history = self.sessions.setdefault(session_id, [])
-        # 群聊里带发言者昵称，让模型知道谁在说话
-        display = text
+        # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
+        history.append({"role": "user", "content": text})
+
+        # 构造"谁在说话"的上下文说明
+        speaker_hint = ""
         if channel_type == "group" and evt:
-            card = (evt.get("sender") or {}).get("card") or (evt.get("sender") or {}).get("nickname") or speaker_id
-            display = f"[{card}] {text}"
-        history.append({"role": "user", "content": display})
+            sender = evt.get("sender") or {}
+            card = sender.get("card") or sender.get("nickname") or speaker_id
+            speaker_hint = f"当前发言者：{card}"
+
+        # 引用说明
+        quote_hint = ""
+        if quoted:
+            quote_hint = f"对方引用了这条消息：{quoted['sender']} 说「{quoted['text'][:100]}」"
+
+        # 热度驱动的模型驻留策略：群聊按热度决定，私聊走配置默认
+        keep_alive = None
+        if channel_type == "group" and channel_id:
+            try:
+                keep_alive = self.engagement.suggest_keep_alive(channel_id)
+            except Exception:
+                keep_alive = None
 
         # orchestrator 内部是同步 requests，放线程池避免阻塞事件循环
         loop = asyncio.get_event_loop()
@@ -234,9 +308,11 @@ class QQBot:
             result = await loop.run_in_executor(
                 None,
                 lambda: self.orchestrator.chat(
-                    list(history), session_id=session_id, current_query=display,
+                    list(history), session_id=session_id, current_query=text,
                     speaker_id=speaker_id, channel_type=channel_type,
                     channel_id=channel_id,
+                    speaker_hint=speaker_hint, quote_hint=quote_hint,
+                    keep_alive=keep_alive,
                 ),
             )
         except Exception as e:
@@ -258,12 +334,13 @@ class QQBot:
 
         return reply
 
-    async def send_reply(self, evt, reply, reply_to=None):
+    async def send_reply(self, evt, reply, reply_to=None, at_user=None):
         lines = [l for l in reply.split("\n") if l.strip()]
         for i, line in enumerate(lines):
-            # 只在第一条消息上带引用
+            # 只在第一条消息上带引用和 @
             rt = reply_to if i == 0 else None
-            await self.send_msg(evt, line, reply_to=rt)
+            au = at_user if i == 0 else None
+            await self.send_msg(evt, line, reply_to=rt, at_user=au)
             if i < len(lines) - 1:
                 await asyncio.sleep(0.8)
 
@@ -327,16 +404,19 @@ class QQBot:
         except Exception as e:
             log.warning("写状态文件失败: %s", e)
 
-    async def send_msg(self, evt, text, reply_to=None):
+    async def send_msg(self, evt, text, reply_to=None, at_user=None):
         if not self.ws:
             return
         action = "send_private_msg" if evt.get("message_type") == "private" else "send_group_msg"
-        # 群聊带引用时用数组格式
-        if reply_to and evt.get("message_type") == "group":
-            message = [
-                {"type": "reply", "data": {"id": reply_to}},
-                {"type": "text", "data": {"text": text}},
-            ]
+        # 群聊：需要数组格式才能带 reply / at 段
+        if evt.get("message_type") == "group" and (reply_to or at_user):
+            message = []
+            if reply_to:
+                message.append({"type": "reply", "data": {"id": reply_to}})
+            if at_user:
+                message.append({"type": "at", "data": {"qq": str(at_user)}})
+                message.append({"type": "text", "data": {"text": " "}})
+            message.append({"type": "text", "data": {"text": text}})
         else:
             message = text
         params = {"message": message}

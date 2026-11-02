@@ -1,54 +1,50 @@
-# ============================================================
-# Shelwell 全局配置
-# 换模型、调参数，只需修改此文件
-# ============================================================
-
-# ---------- 模型配置 ----------
 model:
-  base: "RoseRudolph/rudy-nemo-12b-v1:12b"               # 基座模型（Ollama中的名字）
-        # "qwen3.5:9b"
-  persona: "shelwell-persona"       # 挂载LoRA后的人格模型名（ollama create 后的名字）
-  embedding: "bge-m3"     # 用于记忆向量化
-
-# ---------- Ollama 服务 ----------
+  base: RoseRudolph/rudy-nemo-12b-v1:12b
+  persona: shelwell-persona
+  embedding: bge-m3
 ollama:
-  url: "http://localhost:11434"
-  chat_timeout: 300                 # 对话请求超时（秒）
-  embedding_timeout: 30             # 向量化请求超时（秒）
-
-# ---------- 推理参数 ----------
+  url: http://localhost:11434
+  chat_timeout: 300
+  embedding_timeout: 30
 generation:
   temperature: 0.7
-  num_predict: 1024                 # 单次生成最大token数
-  num_ctx: 8192                     # 上下文窗口大小
-  think: false                      # 是否启用思考模式
-
-# ---------- 上下文管理 ----------
+  num_predict: 1024
+  num_ctx: 8192
+  think: false
+  keep_alive: "10m"         # 模型驻留时长：私聊每条消息刷新倒计时，10分钟无消息后卸载
 context:
-  max_length: 30                    # 短期记忆保留最近N条
-  memory_enabled: true              # 是否启用长期记忆
-
-# ---------- 记忆检索 ----------
+  max_length: 30
+  memory_enabled: true
 memory:
-  top_k: 3                          # 每次检索返回条数
-  min_similarity: 0.35              # 相似度阈值（0-1，越低越宽松）
-  collection_name: "shelwell_memory"
-  bubble_separator: "\n"            # 多气泡消息的分隔符
+  top_k: 3
+  min_similarity: 0.35
+  collection_name: shelwell_memory
+  bubble_separator: '
 
-# ---------- UI ----------
+    '
 ui:
-  page_title: "Shelwell"
-  page_icon: "💬"
-  welcome_message: "你好呀！我是 Shelwell，很高兴认识你。今天想聊点什么呢？"
-
-
-# ---------- QQ 群聊 ----------
+  page_title: Shelwell
+  page_icon: 💬
+  welcome_message: 你好呀！我是 Shelwell，很高兴认识你。今天想聊点什么呢？
 qq_bot:
   group_enabled: true
   trigger_keywords:
-    - "Shelwell"
-    - "Shel"
-    - "she"
-    - "小希"
-    - "薇"
-  # 注意：不加单字词，避免误触发（如"希"会命中"希望""西安"）
+  - Shelwell
+  - Shel
+  - she
+  - 小希
+  - 薇
+  auto_engage:
+    enabled: true
+    heat_threshold: 7.0
+    max_heat: 10.0
+    heat_at_me: 10.0
+    heat_question: 1.0
+    heat_topic: 2.0
+    heat_normal: 0.3
+    heat_rapid: -1.0
+    skip_short_len: 4
+    conversation_threshold: 4.0
+    conversation_window_minutes: 3
+    half_life_minutes: 60
+    heat_reply_to_me: 0.3

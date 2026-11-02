@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
     QGroupBox, QComboBox, QFormLayout, QMessageBox, QLineEdit,
     QTextEdit, QScrollArea, QFrame,
 )
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont
 
 from desktop import services
@@ -87,37 +86,6 @@ class PersonaPage(QWidget):
         cl.addLayout(drow)
         layout.addWidget(create)
 
-        # ---------- 记忆管理 ----------
-        mem_box = QGroupBox("记忆管理")
-        ml = QVBoxLayout(mem_box)
-        self.lab_mem = QLabel("记忆条数：加载中…")
-        self.lab_mem.setStyleSheet("color: #555;")
-        ml.addWidget(self.lab_mem)
-
-        btn_row = QHBoxLayout()
-        self.btn_mem_refresh = QPushButton("刷新统计")
-        self.btn_mem_refresh.clicked.connect(self.refresh_memory)
-        btn_row.addWidget(self.btn_mem_refresh)
-
-        self.btn_clear_mem = QPushButton("清空全部记忆")
-        self.btn_clear_mem.setStyleSheet(
-            "QPushButton{background:#888;color:white;border-radius:4px;padding:4px 12px;}")
-        self.btn_clear_mem.clicked.connect(self.on_clear_memory_clicked)
-        btn_row.addWidget(self.btn_clear_mem)
-        btn_row.addStretch()
-        ml.addLayout(btn_row)
-
-        warn = QLabel("清空将删除全部归档、向量索引和关键词索引，不可恢复。")
-        warn.setStyleSheet("color: #b33; font-size: 12px;")
-        ml.addWidget(warn)
-        layout.addWidget(mem_box)
-
-        self._clear_click_count = 0
-        self._clear_timer = QTimer(self)
-        self._clear_timer.setSingleShot(True)
-        self._clear_timer.setInterval(5000)  # 5 秒无操作重置
-        self._clear_timer.timeout.connect(self._reset_clear_button)
-
         # ---------- 模板示例 ----------
         tpl = QGroupBox("人格模板示例（照着填写）")
         tl = QVBoxLayout(tpl)
@@ -137,50 +105,7 @@ class PersonaPage(QWidget):
         run_async(self, services.list_personas, self._fill_personas)
         run_async(self, services.list_facts, self._fill_facts)
         run_async(self, services.list_loras, self._fill_loras)
-        self.refresh_memory()
 
-    def refresh_memory(self):
-        run_async(self, services.get_memory_stats, self._on_mem_stats)
-
-    def _on_mem_stats(self, st):
-        if st.get("error"):
-            self.lab_mem.setText("记忆条数：读取失败（%s）" % st["error"][:40])
-            return
-        self.lab_mem.setText(
-            "记忆条数：归档 %d 条 | 向量 %d 条 | 关键词 %d 条 | 会话 %d 个"
-            % (st.get("archive", 0), st.get("vector", 0),
-               st.get("lexical", 0), st.get("sessions", 0)))
-
-    def on_clear_memory_clicked(self):
-        self._clear_click_count += 1
-        n = self._clear_click_count
-        if n == 1:
-            self.btn_clear_mem.setText("清空全部记忆 (1/3) 点击确认")
-            self.btn_clear_mem.setStyleSheet(
-                "QPushButton{background:#b8860b;color:white;border-radius:4px;padding:4px 12px;}")
-            self._clear_timer.start()
-        elif n == 2:
-            self.btn_clear_mem.setText("确认清空？再点一次 (2/3)")
-            self.btn_clear_mem.setStyleSheet(
-                "QPushButton{background:#c60;color:white;border-radius:4px;padding:4px 12px;}")
-            self._clear_timer.start()
-        elif n >= 3:
-            self._clear_timer.stop()
-            self.btn_clear_mem.setText("正在清空…")
-            self.btn_clear_mem.setEnabled(False)
-            run_async(self, services.clear_all_memory, self._on_mem_cleared)
-
-    def _reset_clear_button(self):
-        self._clear_click_count = 0
-        self.btn_clear_mem.setText("清空全部记忆")
-        self.btn_clear_mem.setEnabled(True)
-        self.btn_clear_mem.setStyleSheet(
-            "QPushButton{background:#888;color:white;border-radius:4px;padding:4px 12px;}")
-
-    def _on_mem_cleared(self, log):
-        self._reset_clear_button()
-        QMessageBox.information(self, "完成", "记忆已清空。\n\n" + str(log))
-        self.refresh_memory()
 
     def _on_active(self, a):
         self.lab_persona.setText(str(a.get("persona")))

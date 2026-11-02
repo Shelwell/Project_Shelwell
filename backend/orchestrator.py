@@ -45,7 +45,9 @@ class Orchestrator:
         )
 
     def chat(self, messages: list, session_id: str = "default", current_query: str = None,
-             speaker_id: str = None, channel_type: str = None, channel_id: str = None) -> dict:
+             speaker_id: str = None, channel_type: str = None, channel_id: str = None,
+             speaker_hint: str = "", quote_hint: str = "",
+             keep_alive: str = None) -> dict:
         """
         执行一次完整对话。
 
@@ -78,6 +80,7 @@ class Orchestrator:
                 system_as_role=(_prov == "openai_compatible"),
                 speaker_id=speaker_id, channel_type=channel_type,
                 channel_id=channel_id,
+                speaker_hint=speaker_hint, quote_hint=quote_hint,
             )
         except Exception as e:
             print(f"[Orchestrator] 上下文构建失败，降级为纯上下文: {e}")
@@ -85,7 +88,7 @@ class Orchestrator:
 
         # 2. 调模型
         try:
-            raw_reply = self._call_model(prepared)
+            raw_reply = self._call_model(prepared, keep_alive=keep_alive)
         except Exception as e:
             return {"reply": "", "ok": False, "error": f"model_error: {e}"}
 
@@ -94,9 +97,11 @@ class Orchestrator:
         if not reply:
             return {"reply": "", "ok": False, "error": "empty_reply"}
 
-        # 4. 归档（跳过 prompt 污染）
+        # 4. 归档（跳过 prompt 污染 / 纯问梗）
         if current_query and _looks_like_prompt(reply):
             print("[Orchestrator] 回复疑似系统提示词，跳过归档")
+        elif current_query and self._is_pure_meme_ask(current_query):
+            print("[Orchestrator] 纯问梗，跳过归档（不污染记忆）")
         elif current_query:
             try:
                 self.context.archive_turn(
@@ -118,24 +123,64 @@ class Orchestrator:
             except Exception as e:
                 print(f"[Orchestrator] 关闭失败: {e}")
 
-    def _call_model(self, prepared_messages: list) -> str:
+    @staticmethod
+    def _is_pure_meme_ask(text: str) -> bool:
+        """
+        判断是否纯问梗（「XX是什么意思」），这类对话不归档。
+        聊天中提及梗（mention）仍正常归档，作为对话经历。
+        """
+        try:
+            from backend.memewiki.matcher import classify
+            _, mode = classify(text)
+            return mode == "ask"
+        except Exception:
+            return False
+
+    def _call_model(self, prepared_messages: list, keep_alive: str = None) -> str:
         """调用 L2 provider，返回原始文本"""
-        return provider.chat(prepared_messages)
+        return provider.chat(prepared_messages, keep_alive=keep_alive)
 
     def _clean_reply(self, text: str) -> str:
-        """清洗：字面 \\n 转换、去角色标签、去首尾空白"""
+        """
+        清洗模型输出。脚本能做的都在这做，提示词只管风格：
+        1. 字面 \\n 转真换行
+        2. 去角色标签（用户：/你：/Shelwell：）
+        3. 去方括号昵称前缀（[张三] / 【张三】）
+        4. 去引用/回复前缀（引用张三：/回复某人：）
+        表情符号不删，由提示词引导少用。
+        """
         if not text:
             return ""
+        import re
         text = text.replace("\\n", "\n")
+
+        # 角色标签
         tags = ["用户：", "用户:", "Shelwell：", "Shelwell:", "你：", "你:"]
+
+        # 昵称前缀：[张三] 或 【张三】
+        nick_re = re.compile(r"^\s*[\[【][^\]】]{1,20}[\]】]\s*")
+        # 引用/回复前缀：引用张三：/回复某人：/引用：/回复：
+        ref_re = re.compile(r"^\s*(?:引用|回复)[^：:]{0,20}[：:]\s*")
+
         cleaned = []
         for line in text.split("\n"):
+            # 去角色标签
             for tag in tags:
                 if line.startswith(tag):
                     line = line[len(tag):]
                     break
+            # 去昵称前缀（可多次，防嵌套）
+            for _ in range(3):
+                new_line = nick_re.sub("", line, count=1)
+                if new_line == line:
+                    break
+                line = new_line
+            # 去引用/回复前缀
+            line = ref_re.sub("", line, count=1)
             cleaned.append(line)
-        return "\n".join(cleaned).strip()
+
+        result = "\n".join(cleaned).strip()
+        return result
 
     def get_stats(self, messages: list) -> dict:
         """透传 ContextManager 的统计信息"""

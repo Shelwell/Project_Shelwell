@@ -16,9 +16,10 @@ class ProviderError(RuntimeError):
     pass
 
 
-def chat(messages: list) -> str:
+def chat(messages: list, keep_alive: str = None) -> str:
     """
     统一对话入口。按 runtime.active.provider 分发。
+    keep_alive: Ollama 模型驻留时长（如 "30m"/"5m"），None 时用配置默认值。
     返回模型原始文本；失败抛 ProviderError。
     """
     import time
@@ -28,7 +29,7 @@ def chat(messages: list) -> str:
     t0 = time.time()
     try:
         if provider == "ollama":
-            text = _chat_ollama(messages, rt)
+            text = _chat_ollama(messages, rt, keep_alive)
         elif provider == "openai_compatible":
             text = _chat_openai(messages, rt)
         else:
@@ -60,15 +61,19 @@ def _gen_options(rt) -> dict:
     return {"temperature": temp, "num_ctx": num_ctx, "num_predict": num_predict}
 
 
-def _chat_ollama(messages: list, rt) -> str:
+def _chat_ollama(messages: list, rt, keep_alive: str = None) -> str:
     model = rt.get("active.model") or get("model.base", "qwen3.5:9b")
     url = f"{get('ollama.url', 'http://localhost:11434')}/api/chat"
     opts = _gen_options(rt)
+    # 未指定时用配置默认值（默认 10m）
+    if keep_alive is None:
+        keep_alive = get("generation.keep_alive", "10m")
     payload = {
         "model": model,
         "messages": messages,
         "think": get("generation.think", False),
         "stream": False,
+        "keep_alive": keep_alive,
         "options": {
             "num_ctx": opts["num_ctx"],
             "temperature": opts["temperature"],

@@ -23,6 +23,7 @@ from desktop.pages.model_page import ModelPage
 from desktop.pages.api_page import ApiPage
 from desktop.pages.qq_page import QQPage
 from desktop.pages.plugin_page import PluginPage
+from desktop.pages.memory_page import MemoryPage
 
 # ---------------- 首页：启动 + 服务状态 ----------------
 
@@ -104,6 +105,10 @@ class HomePage(QWidget):
         self.btn_restart_napcat.clicked.connect(self._restart_napcat)
         btn_row.addWidget(self.btn_restart_bot)
         btn_row.addWidget(self.btn_restart_napcat)
+        self.btn_unload = QPushButton("卸载模型")
+        self.btn_unload.setToolTip("卸载 Ollama 生成模型，腾出显存给其它程序")
+        self.btn_unload.clicked.connect(self.unload_models)
+        btn_row.addWidget(self.btn_unload)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
@@ -214,10 +219,21 @@ class HomePage(QWidget):
     def _restart_napcat(self):
         run_async(self, services.restart_napcat, lambda _: self.refresh())
 
+    def unload_models(self):
+        self.btn_unload.setEnabled(False)
+        self.btn_unload.setText("卸载中…")
+        run_async(self, services.unload_models, self._on_unloaded)
+
+    def _on_unloaded(self, msg):
+        self.btn_unload.setEnabled(True)
+        self.btn_unload.setText("卸载模型")
+        QMessageBox.information(self, "卸载模型", str(msg))
+        self.refresh()
+
 
 # ---------------- 主窗口 ----------------
 
-PAGES = ["首页", "人格管理", "模型切换", "插件管理", "QQ 账号", "API 接入"]
+PAGES = ["首页", "人格管理", "记忆管理", "模型切换", "插件管理", "QQ 账号", "API 接入"]
 
 
 class MainWindow(QMainWindow):
@@ -247,11 +263,12 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.home_page = HomePage()
         self.persona_page = PersonaPage()
+        self.memory_page = MemoryPage()
         self.model_page = ModelPage()
         self.plugin_page = PluginPage()
         self.qq_page = QQPage()
         self.api_page = ApiPage()
-        for w in (self.home_page, self.persona_page, self.model_page,
+        for w in (self.home_page, self.persona_page, self.memory_page, self.model_page,
                   self.plugin_page, self.qq_page, self.api_page):
             self.stack.addWidget(w)
         layout.addWidget(self.stack, 1)

@@ -5,6 +5,7 @@
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 ROOT = Path(r"E:\Shelwell")
 
@@ -19,22 +20,29 @@ EXCLUDE_QT = [
 
 # 裁剪：无关的 Python 包
 EXCLUDES = EXCLUDE_QT + [
-    "tkinter", "matplotlib", "numpy", "pandas", "scipy",
-    "streamlit", "chromadb", "torch", "transformers",
+    "tkinter", "matplotlib", "pandas", "scipy",
+    "streamlit", "torch", "transformers",
     "IPython", "jupyter", "notebook", "pytest",
 ]
+
+chroma_datas, chroma_binaries, chroma_hidden = collect_all("chromadb")
 
 a = Analysis(
     [str(ROOT / "desktop" / "main.py")],
     pathex=[str(ROOT)],
-    binaries=[
+    binaries=chroma_binaries + [
         (r"E:\Anaconda3\Library\bin\libssl-3-x64.dll", "."),
         (r"E:\Anaconda3\Library\bin\libcrypto-3-x64.dll", "."),
+        (r"E:\Anaconda3\DLLs\_sqlite3.pyd", "."),
+        (r"E:\Anaconda3\Library\bin\sqlite3.dll", "."),
+        (r"E:\Anaconda3\Library\bin\ffi-7.dll", "."),
+        (r"E:\Anaconda3\Library\bin\ffi-8.dll", "."),
+        (r"E:\Anaconda3\Library\bin\ffi.dll", "."),
     ],
-    datas=[
+    datas=chroma_datas + [
         (r"E:\Shelwell\.venv\Lib\site-packages\certifi\cacert.pem", "."),
     ],
-    hiddenimports=[
+    hiddenimports=chroma_hidden + [
         "backend.config_loader",
         "backend.runtime_config",
         "desktop.pages.persona_page",
@@ -42,6 +50,17 @@ a = Analysis(
         "desktop.pages.api_page",
         "desktop.pages.qq_page",
         "desktop.pages.plugin_page",
+        "desktop.pages.memory_page",
+        "sqlite3", "_sqlite3",
+        "chromadb",
+        "backend.memory",
+        "backend.memory.models",
+        "backend.memory.archive",
+        "backend.memory.indexer",
+        "backend.memory.embedder",
+        "backend.memory.jobs",
+        "backend.memory.service",
+        "backend.memory_retriever",
     ],
     hookspath=[],
     hooksconfig={},

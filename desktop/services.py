@@ -571,6 +571,51 @@ def stop_all_services() -> str:
     return "\n".join(logs)
 
 
+def unload_models() -> str:
+    """
+    手动卸载 Ollama 的生成模型，腾出显存。
+    embedding 模型跑在 CPU，不占显存，不用卸载。
+    返回执行结果描述。
+    """
+    import requests
+    try:
+        rt = get_runtime()
+        model = rt.get("active.model") or get("model.base", "")
+        if not model:
+            return "未配置模型，无需卸载"
+        url = f"{get('ollama.url', 'http://localhost:11434')}/api/generate"
+        # 空 prompt + keep_alive=0 是 Ollama 的卸载写法
+        r = requests.post(url, json={
+            "model": model, "keep_alive": 0, "prompt": "",
+        }, timeout=30)
+        if r.status_code == 200:
+            return f"已卸载模型: {model}"
+        return f"卸载失败: status={r.status_code} {r.text[:100]}"
+    except Exception as e:
+        return f"卸载异常: {e}"
+
+
+def get_loaded_models() -> list:
+    """查询当前驻留的模型（含显存占用）"""
+    import requests
+    try:
+        url = f"{get('ollama.url', 'http://localhost:11434')}/api/ps"
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            return []
+        out = []
+        for m in r.json().get("models", []):
+            out.append({
+                "name": m.get("name", ""),
+                "size_gb": round(m.get("size", 0) / 1024**3, 2),
+                "vram_gb": round(m.get("size_vram", 0) / 1024**3, 2),
+                "until": m.get("expires_at", ""),
+            })
+        return out
+    except Exception:
+        return []
+
+
 def get_memory_stats() -> dict:
     """查询记忆库各层条数（供 UI 展示）"""
     try:
@@ -585,6 +630,145 @@ def get_memory_stats() -> dict:
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+def list_episodic_memories(page: int = 1, page_size: int = 20,
+                           session_id: str = "", keyword: str = "",
+                           date_from: str = "", date_to: str = "") -> dict:
+    """
+    分页查询情景记忆。
+    page 从 1 开始；session_id/keyword/date_from/date_to 为空表示不过滤。
+    date 格式 YYYY-MM-DD。
+    返回 {"items": [...], "total": n, "page": p, "page_size": size, "pages": total_pages}
+    """
+    try:
+        from backend.memory.archive import Archive
+        arc = Archive()
+        items = []
+        for ev in arc._iter_all():
+            # 过滤：会话
+            if session_id and ev.session_id != session_id:
+                continue
+            # 过滤：关键词（在 user_msg 和 ai_msg 里搜）
+            if keyword:
+                kw = keyword.lower()
+                if kw not in (ev.user_msg or "").lower() and kw not in (ev.ai_msg or "").lower():
+                    continue
+            # 过滤：时间范围
+            day = (ev.timestamp or "")[:10]
+            if date_from and day < date_from:
+                continue
+            if date_to and day > date_to:
+                continue
+            items.append(ev)
+        # 按时间倒序（新的在前）
+        items.sort(key=lambda e: e.timestamp, reverse=True)
+        total = len(items)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = max(1, min(page, pages))
+        start = (page - 1) * page_size
+        page_items = items[start:start + page_size]
+        return {
+            "items": [{
+                "id": e.id,
+                "timestamp": e.timestamp,
+                "session_id": e.session_id,
+                "speaker_id": e.speaker_id,
+                "channel_type": e.channel_type,
+                "channel_id": e.channel_id,
+                "user_msg": e.user_msg,
+                "ai_msg": e.ai_msg,
+            } for e in page_items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+        }
+    except Exception as e:
+        return {"items": [], "total": 0, "page": 1, "page_size": page_size,
+                "pages": 1, "error": str(e)}
+
+
+def get_semantic_stats() -> dict:
+    """语义记忆统计"""
+    try:
+        from backend.memory.semantic import SemanticStore
+        st = SemanticStore()
+        return st.stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def list_semantic_facts(page: int = 1, page_size: int = 20,
+                        owner_id: str = "", keyword: str = "") -> dict:
+    """分页列语义事实"""
+    try:
+        from backend.memory.semantic import SemanticStore
+        st = SemanticStore()
+        r = st.list_facts(page, page_size, owner_id, "", keyword)
+        # 转成可序列化 dict
+        from backend.memory.forgetting import weight_of
+        items = []
+        for f in r["items"]:
+            items.append({
+                "id": f.id, "fact": f.fact,
+                "subject": f.subject, "predicate": f.predicate, "object": f.object,
+                "confidence": f.confidence, "strength": f.strength,
+                "state": f.state, "created_at": f.created_at,
+                "source_count": len(f.source_ids),
+                "tag": getattr(f, "tag", "misc"),
+                "hits": getattr(f, "hits", 0),
+                "archived": getattr(f, "archived", False),
+                "weight": round(weight_of(f), 2),
+            })
+        return {"items": items, "total": r["total"], "page": r["page"],
+                "page_size": r["page_size"], "pages": r["pages"]}
+    except Exception as e:
+        return {"items": [], "total": 0, "page": 1, "page_size": page_size,
+                "pages": 1, "error": str(e)}
+
+
+def run_consolidate(session_filter: str = "", limit: int = 50,
+                    dry_run: bool = False) -> dict:
+    """触发情景→语义巩固"""
+    try:
+        from backend.memory.consolidator import Consolidator
+        c = Consolidator()
+        return c.consolidate(session_filter=session_filter or None,
+                             limit=limit, dry_run=dry_run)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def delete_semantic_fact(fact_id: str) -> bool:
+    try:
+        from backend.memory.semantic import SemanticStore
+        return SemanticStore().delete(fact_id)
+    except Exception:
+        return False
+
+
+def clear_semantic_memory() -> int:
+    """只清语义记忆"""
+    try:
+        from backend.memory.semantic import SemanticStore
+        return SemanticStore().clear_all()
+    except Exception:
+        return 0
+
+
+def list_episodic_sessions() -> list:
+    """列出情景记忆里出现过的会话标识（去重排序）"""
+    try:
+        from backend.memory.archive import Archive
+        arc = Archive()
+        sessions = set()
+        for ev in arc._iter_all():
+            if ev.session_id:
+                sessions.add(ev.session_id)
+        return sorted(sessions)
+    except Exception:
+        return []
 
 
 def clear_all_memory() -> str:
