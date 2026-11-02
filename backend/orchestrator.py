@@ -7,6 +7,29 @@ from backend.context_manager import ContextManager
 from backend.llm import provider
 
 
+# 模型偶尔会把系统提示词当回复输出，这类内容不能进记忆库
+_PROMPT_POLLUTION_MARKS = [
+    "你是 Shelwell", "【怎么说话", "【你记得的", "【输出格式",
+    "【禁止】", "【态度", "【说话风格", "【示例——",
+]
+
+# 模型输出的占位符/元提示，不是真回复
+_PLACEHOLDER_MARKS = [
+    "(等待用户输入)", "（等待用户输入）", "(待补充)", "（待补充）",
+    "(此处省略)", "（此处省略）", "(省略)", "（省略）",
+]
+
+
+def _looks_like_prompt(text: str) -> bool:
+    """判断回复是否像系统提示词或占位符（不应进记忆）"""
+    if not text:
+        return False
+    if any(m in text for m in _PLACEHOLDER_MARKS):
+        return True
+    hits = sum(1 for m in _PROMPT_POLLUTION_MARKS if m in text)
+    return hits >= 1
+
+
 class Orchestrator:
     """
     对话编排器（无状态服务）
@@ -21,7 +44,8 @@ class Orchestrator:
             memory_enabled=get("context.memory_enabled", True),
         )
 
-    def chat(self, messages: list, session_id: str = "default", current_query: str = None) -> dict:
+    def chat(self, messages: list, session_id: str = "default", current_query: str = None,
+             speaker_id: str = None, channel_type: str = None, channel_id: str = None) -> dict:
         """
         执行一次完整对话。
 
@@ -52,6 +76,8 @@ class Orchestrator:
             prepared = self.context.prepare_context(
                 messages, current_query=current_query, session_id=session_id,
                 system_as_role=(_prov == "openai_compatible"),
+                speaker_id=speaker_id, channel_type=channel_type,
+                channel_id=channel_id,
             )
         except Exception as e:
             print(f"[Orchestrator] 上下文构建失败，降级为纯上下文: {e}")
@@ -68,16 +94,29 @@ class Orchestrator:
         if not reply:
             return {"reply": "", "ok": False, "error": "empty_reply"}
 
-        # 4. 归档
-        if current_query:
+        # 4. 归档（跳过 prompt 污染）
+        if current_query and _looks_like_prompt(reply):
+            print("[Orchestrator] 回复疑似系统提示词，跳过归档")
+        elif current_query:
             try:
                 self.context.archive_turn(
-                    user_msg=current_query, ai_msg=reply, session_id=session_id
+                    user_msg=current_query, ai_msg=reply, session_id=session_id,
+                    speaker_id=speaker_id or "",
+                    channel_type=channel_type or "",
+                    channel_id=channel_id or "",
                 )
             except Exception as e:
                 print(f"[Orchestrator] 归档失败（不影响对话）: {e}")
 
         return {"reply": reply, "ok": True, "error": None}
+
+    def shutdown(self):
+        """释放编排层持有的资源"""
+        if hasattr(self.context, "shutdown"):
+            try:
+                self.context.shutdown()
+            except Exception as e:
+                print(f"[Orchestrator] 关闭失败: {e}")
 
     def _call_model(self, prepared_messages: list) -> str:
         """调用 L2 provider，返回原始文本"""

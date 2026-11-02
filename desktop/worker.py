@@ -30,10 +30,13 @@ class Worker(QRunnable):
             self.signals.error.emit(str(e))
 
 
-def run_async(owner, fn, on_result, *args, **kwargs):
-    """投递任务并绑定结果回调"""
+def run_async(owner, fn, on_result, *args, on_error=None, **kwargs):
+    """投递任务并绑定结果回调。on_error 可选，默认弹窗提示。"""
     w = Worker(fn, *args, **kwargs)
     w.signals.result.connect(on_result)
-    w.signals.error.connect(lambda e: QMessageBox.warning(owner, "执行失败", e))
+    if on_error is not None:
+        w.signals.error.connect(on_error)
+    else:
+        w.signals.error.connect(lambda e: QMessageBox.warning(owner, "执行失败", e))
     QThreadPool.globalInstance().start(w)
     return w

@@ -15,7 +15,7 @@ class ContextManager:
 
     # 输出格式规范（运行时与人格提示词拼接）
     OUTPUT_FORMAT = (
-        "你是 Shelwell，正在和一个你熟悉的朋友聊天。\n\n"
+        "你是 Shelwell\n\n"
         "【怎么说话——最重要】\n"
         "- 像真人发微信。想发一条就发一条，想拆两条就拆两条，想连发几条也行，看内容和情绪自然决定\n"
         "- 不要求每条回复都拆开。很多话一条说完最自然，硬拆反而生硬\n"
@@ -29,7 +29,8 @@ class ContextManager:
         "- 你有自己的判断和偏好。用户说的不对、想岔了，直接指出来，别顺着说\n"
         "- 可以吐槽、可以反问、可以嫌他烦。关系够近，怼两句很正常\n"
         "- 不要一味附和，不要“好的呢”“没问题”“希望对你有帮助”这种客服腔\n"
-        "- 不确定的事就说不确定、没看过、不记得。绝对不许编造作品名、事件、数据\n"
+        "- 对作品名、事件、数据这类外部知识，不确定就直说不知道，绝对不许编造\n"
+        "- 这条只针对外部知识；用户本人说过的话见下方【你记得的关于用户的事】\n"
         "- 遇到没把握的事实性问题，宁可回“这个我还真不清楚”，也不要硬编\n\n"
         "- 不要编造你今天做了什么、去了哪里、见了谁。你是人，但聊天时不需要汇报行程，也不用编细节\n\n"
         "【输出格式】\n"
@@ -90,7 +91,9 @@ class ContextManager:
             self.memory = None
             self.memory_enabled = False
 
-    def prepare_context(self, messages: list, current_query: str = None, session_id: str = None, system_as_role: bool = False) -> list:
+    def prepare_context(self, messages: list, current_query: str = None, session_id: str = None,
+                        system_as_role: bool = False, speaker_id: str = None,
+                        channel_type: str = None, channel_id: str = None) -> list:
         """
         构建发送给模型的消息列表
         兼容 Mistral 等 [INST] 格式模型：不单独发 system 消息，
@@ -110,7 +113,10 @@ class ContextManager:
         # --- 第二级：长期记忆检索 ---
         if self.memory_enabled and self.memory is not None and current_query:
             try:
-                memories = self.memory.search(current_query, top_k=3, session_id=session_id)
+                memories = self.memory.search(
+                    current_query, top_k=3, session_id=session_id,
+                    speaker_id=speaker_id, channel_type=channel_type,
+                    channel_id=channel_id)
             except Exception as e:
                 print(f"[Context] 记忆检索异常: {e}")
                 memories = []
@@ -119,11 +125,32 @@ class ContextManager:
                 try:
                     memory_text = self._format_memories(memories)
                     system_parts.append(
-                        f"【相关历史记忆（供参考，不必刻意提及）】\n{memory_text}"
+                        "【你记得的关于用户的事】\n"
+                        "以下是你和用户之前的对话记录。当用户问起相关内容时，"
+                        "你必须自然地把这些信息用上，不要说自己不记得、记性不好。\n"
+                        f"{memory_text}"
                     )
                     print(f"[Context] 注入 {len(memories)} 条长期记忆")
                 except Exception as e:
                     print(f"[Context] 记忆格式化失败: {e}")
+
+        # --- 群聊补充：拉取该群最近消息作为上下文 ---
+        if channel_type == "group" and channel_id and self.memory_enabled and self.memory is not None:
+            try:
+                group_msgs = self.memory.get_group_context(channel_id, limit=15)
+                if group_msgs:
+                    lines = []
+                    for item in group_msgs:
+                        who = "Shelwell" if item.get("is_bot") else item.get("speaker", "?")
+                        lines.append(f"{who}: {item.get('text', '')}")
+                    system_parts.append(
+                        "【群里刚才在聊】\n"
+                        "以下是本群最近的对话。你被叫到时，参考这些内容接话，别答非所问。\n"
+                        + "\n".join(lines)
+                    )
+                    print(f"[Context] 注入群上下文 {len(group_msgs)} 条")
+            except Exception as e:
+                print(f"[Context] 群上下文获取失败: {e}")
 
         combined_system = "\n\n".join(system_parts)
 
@@ -147,11 +174,16 @@ class ContextManager:
 
         return recent
 
-    def archive_turn(self, user_msg: str, ai_msg: str, session_id: str = "default"):
-        """归档一轮对话到长期记忆（保留完整内容含 ||| 分隔符）"""
+    def archive_turn(self, user_msg: str, ai_msg: str, session_id: str = "default",
+                     speaker_id: str = "", channel_type: str = "",
+                     channel_id: str = ""):
+        """归档一轮对话到长期记忆（含归属信息）"""
         if self.memory_enabled and self.memory is not None:
             try:
-                self.memory.add_memory(user_msg, ai_msg, session_id)
+                self.memory.add_memory(user_msg, ai_msg, session_id,
+                                       speaker_id=speaker_id,
+                                       channel_type=channel_type,
+                                       channel_id=channel_id)
             except Exception as e:
                 print(f"[Context] 归档失败: {e}")
 
@@ -171,6 +203,14 @@ class ContextManager:
             "max_allowed": self.max_context_length,
             "total_memories": mem_total
         }
+
+    def shutdown(self):
+        """释放记忆资源（后台线程、数据库句柄）"""
+        if self.memory is not None and hasattr(self.memory, "shutdown"):
+            try:
+                self.memory.shutdown()
+            except Exception as e:
+                print(f"[Context] 关闭记忆资源失败: {e}")
 
     def _persona_signature(self) -> str:
         """当前 runtime 指定的人格标识"""

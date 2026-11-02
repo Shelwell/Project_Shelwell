@@ -4,12 +4,12 @@
 
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QListWidget, QListWidgetItem,
     QStackedWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGridLayout, QGroupBox, QTextEdit, QComboBox, QFrame,
+    QGridLayout, QGroupBox, QTextEdit, QComboBox, QFrame, QMessageBox,
 )
 
 from desktop.services import ROOT
@@ -52,12 +52,32 @@ class HomePage(QWidget):
             "QPushButton:disabled{background:#999;}")
         self.btn_start_all.clicked.connect(self.start_all)
         start_row.addWidget(self.btn_start_all)
+
+        self.btn_stop_all = QPushButton("停止全部服务")
+        self.btn_stop_all.setMinimumHeight(44)
+        self.btn_stop_all.setStyleSheet(
+            "QPushButton{background:#b33;color:white;font-size:15px;"
+            "font-weight:bold;border-radius:6px;padding:0 24px;}"
+            "QPushButton:disabled{background:#999;}")
+        self.btn_stop_all.clicked.connect(self.stop_all)
+        start_row.addWidget(self.btn_stop_all)
+
         start_row.addStretch()
         layout.addLayout(start_row)
 
-        # 状态卡片
+        # 状态卡片（标题行含刷新按钮）
         self.box = QGroupBox("服务状态")
-        grid = QGridLayout(self.box)
+        box_layout = QVBoxLayout(self.box)
+        head_row = QHBoxLayout()
+        self.lab_auto = QLabel("自动刷新中")
+        self.lab_auto.setStyleSheet("color: #888; font-size: 12px;")
+        head_row.addWidget(self.lab_auto)
+        head_row.addStretch()
+        self.btn_refresh = QPushButton("刷新状态")
+        self.btn_refresh.clicked.connect(self.refresh)
+        head_row.addWidget(self.btn_refresh)
+        box_layout.addLayout(head_row)
+        grid = QGridLayout()
         self.labels = {}
         items = [
             ("ShelwellOllama", "Ollama 服务"),
@@ -73,17 +93,15 @@ class HomePage(QWidget):
             lab.setStyleSheet("font-weight: bold;")
             grid.addWidget(lab, r, c * 2 + 1)
             self.labels[key] = lab
+        box_layout.addLayout(grid)
         layout.addWidget(self.box)
 
         # 快捷操作
         btn_row = QHBoxLayout()
-        self.btn_refresh = QPushButton("刷新状态")
-        self.btn_refresh.clicked.connect(self.refresh)
         self.btn_restart_bot = QPushButton("重启 QQBot")
         self.btn_restart_bot.clicked.connect(lambda: self._restart("ShelwellQQBot"))
         self.btn_restart_napcat = QPushButton("重启 NapCat")
         self.btn_restart_napcat.clicked.connect(self._restart_napcat)
-        btn_row.addWidget(self.btn_refresh)
         btn_row.addWidget(self.btn_restart_bot)
         btn_row.addWidget(self.btn_restart_napcat)
         btn_row.addStretch()
@@ -106,22 +124,62 @@ class HomePage(QWidget):
         log_layout.addWidget(self.log_view)
         layout.addWidget(log_box, 1)
 
+        self._refreshing = False
         self.refresh()
+        # 每 2 秒自动刷新
+        self._timer = QTimer(self)
+        self._timer.setInterval(2000)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start()
 
     def start_all(self):
+        r = QMessageBox.question(
+            self, "确认", "确定启动全部 Shelwell 服务？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
         self.btn_start_all.setEnabled(False)
+        self.btn_stop_all.setEnabled(False)
         self.btn_start_all.setText("启动中，请稍候…")
         run_async(self, services.start_all_services, self._on_started)
 
     def _on_started(self, log):
         self.btn_start_all.setEnabled(True)
+        self.btn_stop_all.setEnabled(True)
         self.btn_start_all.setText("一键启动全部服务")
         self.log_view.setPlainText(str(log))
         self.refresh()
 
+    def stop_all(self):
+        r = QMessageBox.question(
+            self, "确认", "确定停止全部 Shelwell 服务？\nQQ 对话将中断。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if r != QMessageBox.Yes:
+            return
+        self.btn_start_all.setEnabled(False)
+        self.btn_stop_all.setEnabled(False)
+        self.btn_stop_all.setText("停止中，请稍候…")
+        run_async(self, services.stop_all_services, self._on_stopped)
+
+    def _on_stopped(self, log):
+        self.btn_start_all.setEnabled(True)
+        self.btn_stop_all.setEnabled(True)
+        self.btn_stop_all.setText("停止全部服务")
+        self.log_view.setPlainText(str(log))
+        self.refresh()
+
     def refresh(self):
+        if self._refreshing:
+            return
+        self._refreshing = True
         self.btn_refresh.setEnabled(False)
-        run_async(self, services.collect_status, self._on_status)
+        run_async(self, services.collect_status, self._on_status,
+                  on_error=self._on_status_error)
+
+    def _on_status_error(self, err):
+        self._refreshing = False
+        self.btn_refresh.setEnabled(True)
+        print("[Home] 状态刷新失败:", err)
 
     def _on_status(self, data):
         for k, lab in self.labels.items():
@@ -136,6 +194,7 @@ class HomePage(QWidget):
             lab.setStyleSheet(
                 "color: green; font-weight: bold;" if ok
                 else "color: #b00; font-weight: bold;")
+        self._refreshing = False
         self.btn_refresh.setEnabled(True)
         if self.log_select.count() == 0:
             run_async(self, services.list_logs, self._on_logs)

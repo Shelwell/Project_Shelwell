@@ -8,7 +8,7 @@ model:
   base: "RoseRudolph/rudy-nemo-12b-v1:12b"               # 基座模型（Ollama中的名字）
         # "qwen3.5:9b"
   persona: "shelwell-persona"       # 挂载LoRA后的人格模型名（ollama create 后的名字）
-  embedding: "nomic-embed-text"     # 用于记忆向量化
+  embedding: "bge-m3"     # 用于记忆向量化
 
 # ---------- Ollama 服务 ----------
 ollama:
@@ -40,3 +40,15 @@ ui:
   page_title: "Shelwell"
   page_icon: "💬"
   welcome_message: "你好呀！我是 Shelwell，很高兴认识你。今天想聊点什么呢？"
+
+
+# ---------- QQ 群聊 ----------
+qq_bot:
+  group_enabled: true
+  trigger_keywords:
+    - "Shelwell"
+    - "Shel"
+    - "she"
+    - "小希"
+    - "薇"
+  # 注意：不加单字词，避免误触发（如"希"会命中"希望""西安"）

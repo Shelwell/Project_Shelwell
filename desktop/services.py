@@ -74,6 +74,52 @@ def docker_running() -> str:
     return "UNKNOWN"
 
 
+def get_qq_status() -> dict:
+    """读取 qq_bot 上报的账号状态文件"""
+    import json
+    sp = ROOT / "logs" / "qq_status.json"
+    if not sp.exists():
+        return {"online": False, "error": "状态文件未生成，服务可能未运行"}
+    try:
+        return json.loads(sp.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"online": False, "error": str(e)}
+
+
+def list_cached_accounts() -> list:
+    """
+    列出 NapCat 缓存过的账号。
+    qq_data 下每个 nt_qq_<hash> 目录对应一个登录过的账号，
+    目录名 hash 无法直接还原 QQ 号，需结合 webui.json 的 autoLoginAccount 判断。
+    返回 [{"hash": ..., "is_current": bool}]，当前账号从 webui.json 读取。
+    """
+    import json
+    out = []
+    qqdir = ROOT / "adapters" / "qq_bot" / "qq_data"
+    if not qqdir.exists():
+        return out
+    current_uid = ""
+    wj = ROOT / "adapters" / "qq_bot" / "napcat_data" / "webui.json"
+    if wj.exists():
+        try:
+            current_uid = str(json.loads(wj.read_text(encoding="utf-8")).get("autoLoginAccount", ""))
+        except Exception:
+            pass
+    for d in qqdir.iterdir():
+        if d.is_dir() and d.name.startswith("nt_qq_"):
+            h = d.name[len("nt_qq_"):]
+            out.append({"hash": h, "dir": str(d), "is_current": bool(current_uid)})
+    return out
+
+
+def get_webui_url() -> str:
+    """构造带 token 的 WebUI 地址"""
+    token = get_napcat_token()
+    if token:
+        return f"http://127.0.0.1:6099/webui?token={token}"
+    return "http://127.0.0.1:6099/webui"
+
+
 def get_napcat_token() -> str:
     """读取 NapCat WebUI token：优先配置文件的持久值，回退到容器日志"""
     cfg = ROOT / "adapters" / "qq_bot" / "napcat_data" / "webui.json"
@@ -397,6 +443,36 @@ def get_generation() -> dict:
     return get_runtime().get("generation", {}) or {}
 
 
+def _free_ollama_port() -> str:
+    """
+    清理抢占 11434 的游离 ollama 进程。
+    桌面版 Ollama 会自启并占端口，导致 NSSM 服务启动失败。
+    返回描述文本。
+    """
+    out = run_ps(
+        "(Get-NetTCPConnection -LocalPort 11434 -State Listen "
+        "-ErrorAction SilentlyContinue).OwningProcess", 15)
+    pids = [x.strip() for x in out.splitlines() if x.strip().isdigit()]
+    if not pids:
+        return "11434 端口空闲"
+    killed = []
+    for pid in pids:
+        # 判断父进程：nssm.exe 拉起的是服务，不能杀
+        parent = run_ps(
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId", 10).strip()
+        pname = run_ps(
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={parent}').Name", 10).strip()
+        if "nssm" in pname.lower():
+            continue
+        run_ps(f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue", 15)
+        killed.append(pid)
+    if killed:
+        import time
+        time.sleep(2)
+        return "已清理游离 ollama 进程: " + ", ".join(killed)
+    return "端口由服务持有"
+
+
 def start_all_services() -> str:
     """一键启动：Docker Desktop → 三个 Windows 服务 → NapCat 容器"""
     logs = []
@@ -426,6 +502,10 @@ def start_all_services() -> str:
 
     # 2. Windows 服务
     log("[2/3] 启动 Shelwell 服务…")
+    # 先清理抢占 Ollama 端口的游离进程，避免服务启动失败
+    port_msg = _free_ollama_port()
+    if "已清理" in port_msg:
+        log("    " + port_msg)
     for svc in ("ShelwellOllama", "ShelwellQQBot"):
         st = service_state(svc)
         if st.upper() == "RUNNING":
@@ -455,6 +535,124 @@ def start_all_services() -> str:
     for k, v in collect_status().items():
         log(f"  {k}: {v}")
     return "\n".join(logs)
+
+
+def stop_all_services() -> str:
+    """停止全部 Shelwell 服务（Ollama/QQBot 服务 + NapCat 容器，保留 Docker Desktop）"""
+    logs = []
+
+    def log(msg):
+        logs.append(msg)
+
+    log("[1/2] 停止 Shelwell 服务…")
+    for svc in ("ShelwellQQBot", "ShelwellOllama"):
+        st = service_state(svc)
+        if st.upper() != "RUNNING":
+            log(f"    {svc} 未运行（{st}）")
+            continue
+        run_ps(f"Stop-Service '{svc}' -Force -ErrorAction SilentlyContinue", 30)
+        st2 = service_state(svc)
+        log(f"    {svc}: {st} -> {st2}")
+
+    log("[2/2] 停止 NapCat 容器…")
+    r = docker_running()
+    if r == "RUNNING":
+        run_ps("docker stop napcat", 90)
+        log("    已停止 napcat")
+    elif r == "STOPPED":
+        log("    napcat 已停止")
+    else:
+        log(f"    NapCat 状态: {r}")
+
+    log("")
+    log("=== 停止完成 ===")
+    for k, v in collect_status().items():
+        log(f"  {k}: {v}")
+    return "\n".join(logs)
+
+
+def get_memory_stats() -> dict:
+    """查询记忆库各层条数（供 UI 展示）"""
+    try:
+        from backend.memory.service import MemoryService
+        svc = MemoryService(auto_worker=False)
+        st = svc.get_stats()
+        return {
+            "archive": st["archive"]["total"],
+            "vector": st["index"]["vector"],
+            "lexical": st["index"]["lexical"],
+            "sessions": st["archive"]["sessions"],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def clear_all_memory() -> str:
+    """
+    彻底清空全部记忆：归档 JSONL、向量索引、FTS 索引、任务表。
+    返回执行日志。
+    """
+    import glob
+    import os
+    logs = []
+
+    def log(m):
+        logs.append(m)
+
+    try:
+        base = ROOT / "memory"
+
+        # 1. 清空归档 JSONL
+        hdir = base / "history"
+        n_files = 0
+        n_lines = 0
+        if hdir.exists():
+            for f in hdir.glob("*.jsonl"):
+                try:
+                    n_lines += sum(1 for _ in f.open(encoding="utf-8"))
+                except Exception:
+                    pass
+                os.remove(f)
+                n_files += 1
+        log("归档: 删除 %d 个文件, %d 条记录" % (n_files, n_lines))
+
+        # 2. 删除向量 collection
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(
+                path=str(base / "vector_store" / "chroma_db"))
+            names = [c.name if hasattr(c, "name") else c
+                     for c in client.list_collections()]
+            removed = []
+            for n in names:
+                client.delete_collection(n)
+                removed.append(n)
+            log("向量: 删除 collection %s" % (removed or "无"))
+        except Exception as e:
+            log("向量清理失败: %s" % e)
+
+        # 3. 删除 FTS 索引文件
+        fts = base / "index" / "memory_fts.sqlite3"
+        for suffix in ["", "-wal", "-shm"]:
+            p = Path(str(fts) + suffix)
+            if p.exists():
+                os.remove(p)
+        log("FTS 索引: 已删除")
+
+        # 4. 清空任务表
+        jobs = base / "index" / "jobs.sqlite3"
+        for suffix in ["", "-wal", "-shm"]:
+            p = Path(str(jobs) + suffix)
+            if p.exists():
+                os.remove(p)
+        log("任务表: 已删除")
+
+        log("")
+        log("清空完成")
+        return "\n".join(logs)
+    except Exception as e:
+        log("清空异常: %s" % e)
+        return "\n".join(logs)
 
 
 def restart_service(name: str) -> str:
