@@ -5,6 +5,7 @@
 from backend.config_loader import get
 from backend.context_manager import ContextManager
 from backend.llm import provider
+from backend.reply_format import split_bubbles
 
 
 # 模型偶尔会把系统提示词当回复输出，这类内容不能进记忆库
@@ -92,10 +93,16 @@ class Orchestrator:
         except Exception as e:
             return {"reply": "", "ok": False, "error": f"model_error: {e}"}
 
-        # 3. 清洗
+        # 3. 清洗 + 切气泡（格式交给代码，模型只管内容）
         reply = self._clean_reply(raw_reply)
-        if not reply:
+        bubbles = split_bubbles(
+            reply,
+            limit=get("reply.max_chars_per_bubble", 40),
+            max_bubbles=get("reply.max_bubbles", 3),
+        )
+        if not bubbles:
             return {"reply": "", "ok": False, "error": "empty_reply"}
+        reply = "\n".join(bubbles)
 
         # 4. 归档（跳过 prompt 污染 / 纯问梗）
         if current_query and _looks_like_prompt(reply):
@@ -113,7 +120,7 @@ class Orchestrator:
             except Exception as e:
                 print(f"[Orchestrator] 归档失败（不影响对话）: {e}")
 
-        return {"reply": reply, "ok": True, "error": None}
+        return {"reply": reply, "bubbles": bubbles, "ok": True, "error": None}
 
     def shutdown(self):
         """释放编排层持有的资源"""

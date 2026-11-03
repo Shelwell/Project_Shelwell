@@ -1,5 +1,5 @@
 model:
-  base: RoseRudolph/rudy-nemo-12b-v1:12b
+  base: qwen3.8:27b
   persona: shelwell-persona
   embedding: bge-m3
 ollama:
@@ -19,9 +19,9 @@ memory:
   top_k: 3
   min_similarity: 0.35
   collection_name: shelwell_memory
-  bubble_separator: '
-
-    '
+reply:
+  max_chars_per_bubble: 40   # 单个气泡字符上限；超长回复按标点再切分
+  max_bubbles: 3             # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
 ui:
   page_title: Shelwell
   page_icon: 💬
