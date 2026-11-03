@@ -73,13 +73,8 @@ class PersonaEngine:
         if traits:
             out.append("【性格】")
             for t in traits:
-                t = str(t)
-                # 避免模型把"引导欲"误解成不停反问
-                if "引导欲" in t:
-                    t = "有自己的看法和判断，聊天时带着自己的观点，而不是一味抛问题让用户接"
-                if "主动问候" in t:
-                    t = "记得用户提过的事，合适的时候自然关心"
-                out.append("- " + t)
+                # 原文直出：人格唯一真相源在 yaml，代码不再改写措辞
+                out.append("- " + str(t))
 
         emo = p.get("emotional_range") or []
         if emo:

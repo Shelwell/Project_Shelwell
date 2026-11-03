@@ -71,14 +71,12 @@ class Orchestrator:
 
         # 1. 构建上下文（短期 + 长期记忆 + 人格指令）
         try:
-            try:
-                from backend.runtime_config import get_runtime
-                _prov = (get_runtime().get("active.provider") or "ollama").strip()
-            except Exception:
-                _prov = "ollama"
+            # 人格指令一律用独立 system 消息承载：Ollama 的 chat template
+            # （Mistral Nemo / Qwen 系）都支持 system role；塞进 user 消息会让
+            # 指令优先级降到最低，且聊到 30 轮后完全衰减。
             prepared = self.context.prepare_context(
                 messages, current_query=current_query, session_id=session_id,
-                system_as_role=(_prov == "openai_compatible"),
+                system_as_role=True,
                 speaker_id=speaker_id, channel_type=channel_type,
                 channel_id=channel_id,
                 speaker_hint=speaker_hint, quote_hint=quote_hint,
