@@ -211,6 +211,9 @@ class MemoryPage(QWidget):
 
     def on_type_changed(self):
         self.table.clearSpans()
+        # 必须先清空行：否则上一种模式留下的“删除”按钮会残留在新表格的单元格上
+        # （情景模式的操作列索引 5，正好是语义模式的“状态”列）
+        self.table.setRowCount(0)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         if self.cb_type.currentIndex() == 1:
@@ -226,15 +229,22 @@ class MemoryPage(QWidget):
         self.load_page(1)
 
     def _apply_header_modes(self):
-        """列宽：首列自适应，其余按内容，操作列固定窄宽"""
+        """列宽可拖动：全部 Interactive，切换类型时套用一组默认宽度"""
         hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        hh.setMinimumSectionSize(40)
         n = self.table.columnCount()
+        defaults = {
+            6: [150, 110, 90, 260, 260],
+            8: [320, 90, 60, 50, 64, 70, 64],
+        }.get(n, [])
         for i in range(n):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        if n:
-            hh.setSectionResizeMode(0, QHeaderView.Stretch)
-            hh.setSectionResizeMode(n - 1, QHeaderView.Fixed)
-            self.table.setColumnWidth(n - 1, 64)
+            if i == n - 1:
+                self.table.setColumnWidth(i, 64)      # 操作列
+            else:
+                self.table.setColumnWidth(
+                    i, defaults[i] if i < len(defaults) else 100)
 
     def reset_filters(self):
         self.ed_keyword.clear()
@@ -263,6 +273,7 @@ class MemoryPage(QWidget):
         self._cur_page = r["page"]
         self._pages = r["pages"]
         items = r["items"]
+        self.table.setRowCount(0)   # 清掉上一页残留的按钮控件
         self.table.setRowCount(len(items))
         for i, f in enumerate(items):
             archived = f.get("archived", False)
@@ -314,6 +325,7 @@ class MemoryPage(QWidget):
         self._cur_page = r["page"]
         self._pages = r["pages"]
         items = r["items"]
+        self.table.setRowCount(0)   # 清掉上一页残留的按钮控件
         self.table.setRowCount(len(items))
         for i, m in enumerate(items):
             ts = (m.get("timestamp") or "")[:19].replace("T", " ")
