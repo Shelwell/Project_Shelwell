@@ -43,9 +43,12 @@ class Consolidator:
 
         failed = 0
         for owner_id, evs in groups.items():
+            # 主语用发言人昵称；没有昵称（旧数据）时退回 QQ 号，绝不写成“用户”
+            display = next((e.speaker_name for e in evs if e.speaker_name), "") or str(owner_id)
             # 提取失败时抛异常，此时不标记已提炼，下轮可重试
             try:
-                facts = self.extractor.extract(evs)
+                facts = self.extractor.extract(evs, speaker_name=display,
+                                               owner_id=owner_id)
             except Exception as e:
                 failed += 1
                 print(f"[Consolidator] owner={owner_id} 提炼失败，跳过标记: {e}")

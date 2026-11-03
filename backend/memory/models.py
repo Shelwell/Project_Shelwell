@@ -38,6 +38,7 @@ class MemoryEvent:
     ai_msg: str
     # 归属：谁在哪个场景说的
     speaker_id: str = ""       # 发言者 QQ 号
+    speaker_name: str = ""     # 发言者昵称/群名片（提炼事实时用作主语）
     channel_type: str = "private"  # private / group
     channel_id: str = ""       # 私聊=用户QQ号，群聊=群号
     score: float = 0.0
@@ -51,7 +52,7 @@ class MemoryEvent:
     def create(session_id: str, user_msg: str, ai_msg: str,
                score: float = 0.0, emotion: str = "",
                speaker_id: str = "", channel_type: str = "private",
-               channel_id: str = "") -> "MemoryEvent":
+               channel_id: str = "", speaker_name: str = "") -> "MemoryEvent":
         # 未显式传归属时，从 session_id 推断（兼容旧调用）
         if not speaker_id:
             parsed = parse_session(session_id)
@@ -65,6 +66,7 @@ class MemoryEvent:
             user_msg=user_msg,
             ai_msg=ai_msg,
             speaker_id=speaker_id,
+            speaker_name=speaker_name,
             channel_type=channel_type,
             channel_id=channel_id,
             score=score,

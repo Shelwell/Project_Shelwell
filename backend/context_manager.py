@@ -199,14 +199,15 @@ class ContextManager:
 
     def archive_turn(self, user_msg: str, ai_msg: str, session_id: str = "default",
                      speaker_id: str = "", channel_type: str = "",
-                     channel_id: str = ""):
+                     channel_id: str = "", speaker_name: str = ""):
         """归档一轮对话到长期记忆（含归属信息）"""
         if self.memory_enabled and self.memory is not None:
             try:
                 self.memory.add_memory(user_msg, ai_msg, session_id,
                                        speaker_id=speaker_id,
                                        channel_type=channel_type,
-                                       channel_id=channel_id)
+                                       channel_id=channel_id,
+                                       speaker_name=speaker_name)
             except Exception as e:
                 print(f"[Context] 归档失败: {e}")
 

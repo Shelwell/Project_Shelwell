@@ -74,7 +74,7 @@ class MemoryService:
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    score: float = 0.0, emotion: str = "",
                    speaker_id: str = "", channel_type: str = "",
-                   channel_id: str = "") -> bool:
+                   channel_id: str = "", speaker_name: str = "") -> bool:
         """
         写入一轮对话：
         1. 归档到 JSONL（权威）
@@ -84,7 +84,7 @@ class MemoryService:
         event = MemoryEvent.create(
             session_id, user_msg, ai_msg, score=score, emotion=emotion,
             speaker_id=speaker_id, channel_type=channel_type or "private",
-            channel_id=channel_id,
+            channel_id=channel_id, speaker_name=speaker_name,
         )
         if not self.archive.append(event):
             return False

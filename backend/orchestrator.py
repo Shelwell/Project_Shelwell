@@ -47,7 +47,7 @@ class Orchestrator:
 
     def chat(self, messages: list, session_id: str = "default", current_query: str = None,
              speaker_id: str = None, channel_type: str = None, channel_id: str = None,
-             speaker_hint: str = "", quote_hint: str = "",
+             speaker_name: str = "", speaker_hint: str = "", quote_hint: str = "",
              keep_alive: str = None) -> dict:
         """
         执行一次完整对话。
@@ -114,6 +114,7 @@ class Orchestrator:
                     speaker_id=speaker_id or "",
                     channel_type=channel_type or "",
                     channel_id=channel_id or "",
+                    speaker_name=speaker_name or "",
                 )
             except Exception as e:
                 print(f"[Orchestrator] 归档失败（不影响对话）: {e}")

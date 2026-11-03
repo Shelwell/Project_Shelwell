@@ -261,12 +261,15 @@ class QQBot:
         """未触发的群消息：只归档不回复"""
         user_id = str(evt.get("user_id", ""))
         group_id = str(evt.get("group_id", ""))
+        sender = evt.get("sender") or {}
+        speaker_name = sender.get("card") or sender.get("nickname") or user_id
         session_id = f"qqg:{group_id}:{user_id}"
         try:
             self.orchestrator.context.archive_turn(
                 user_msg=text, ai_msg="",
                 session_id=session_id,
                 speaker_id=user_id, channel_type="group", channel_id=group_id,
+                speaker_name=speaker_name,
             )
         except Exception as e:
             log.warning("群消息归档失败: %s", e)
@@ -282,12 +285,15 @@ class QQBot:
         # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
         history.append({"role": "user", "content": text})
 
-        # 构造"谁在说话"的上下文说明
+        # 构造"谁在说话"的上下文说明，并取出昵称供记忆归属使用
         speaker_hint = ""
-        if channel_type == "group" and evt:
+        speaker_name = ""
+        if evt:
             sender = evt.get("sender") or {}
-            card = sender.get("card") or sender.get("nickname") or speaker_id
-            speaker_hint = f"当前发言者：{card}"
+            speaker_name = (sender.get("card") or sender.get("nickname")
+                            or str(speaker_id or ""))
+        if channel_type == "group" and evt:
+            speaker_hint = f"当前发言者：{speaker_name or speaker_id}"
 
         # 引用说明
         quote_hint = ""
@@ -310,7 +316,7 @@ class QQBot:
                 lambda: self.orchestrator.chat(
                     list(history), session_id=session_id, current_query=text,
                     speaker_id=speaker_id, channel_type=channel_type,
-                    channel_id=channel_id,
+                    channel_id=channel_id, speaker_name=speaker_name,
                     speaker_hint=speaker_hint, quote_hint=quote_hint,
                     keep_alive=keep_alive,
                 ),

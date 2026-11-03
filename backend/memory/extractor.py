@@ -1,35 +1,35 @@
 # backend/memory/extractor.py
 # 职责：从情景记忆中提炼结构化事实（调主模型）
-# 原则：只采信用户陈述；AI 回复不作为用户事实依据
+# 原则：只采信用户陈述；AI 回复不作为用户事实依据；
+#       主语必须是发言人本人（昵称/QQ），禁止用“用户”吞掉身份
 
 import json
 import re
 
 from backend.memory.models import MemoryEvent
 
-EXTRACTOR_VERSION = "v1"
+EXTRACTOR_VERSION = "v2"   # v2：按发言人提取，主语用昵称
 
-SYSTEM_PROMPT = """你是一个信息提炼器。给你一段对话记录，提取其中关于「用户」的稳定事实。
+# {who} = 发言人称呼，{owner} = QQ/ID
+SYSTEM_PROMPT_TMPL = """你是一个信息提炼器。下面这些消息全部来自同一个人：{who}（ID {owner}）。
+请只提取关于 {who} 本人的稳定事实。
 
 规则：
-1. 只提取用户自己陈述的事实，不要提取 Shelwell（助手）说的话。
-2. 只提取稳定信息：偏好、经历、计划、关系、状态、观点。不要提取寒暄、疑问、临时情绪。
-3. 每条事实用一句话陈述，主语是用户，简洁明确。
-4. 尽量拆出结构化三元组：subject（主语，通常是「用户」）、predicate（谓语）、object（宾语）。
-5. 给每条事实标注 tag，从以下六选一：
-   - identity：身份（我是谁、职业、家庭关系）
-   - agreement：约定（答应的事、计划、规则）
-   - emotion：强烈情绪（深度的喜恶、重要情绪事件）
-   - preference：偏好（喜欢/讨厌什么，日常喜好）
-   - meme：梗（口头禅、群里的玩笑）
-   - misc：其他琐事
-6. 如果对话里没有值得记住的事实，返回空数组。
+1. 主语一律写成「{who}」，禁止使用「用户」「对方」「他」「她」这类模糊称呼。
+2. 只提取陈述句里稳定的信息：偏好、经历、计划、关系、状态、观点；跳过寒暄、疑问、临时情绪。
+3. 不采信 Shelwell（助手）的回复；消息里提到的其他人（朋友、同事、家人）的事也不要记到 {who} 头上。
+4. 每条 fact 用一句话说清并带上主语，例如「{who}喜欢喝冰美式」。
+5. 三元组的 subject 同样写「{who}」。
+6. tag 六选一：identity / agreement / emotion / preference / meme / misc。
+7. 没有值得记住的事实就返回空数组。
 
 输出格式（严格 JSON，不要任何额外文字）：
-{"facts": [{"subject": "用户", "predicate": "在学", "object": "做菜", "fact": "用户在学做菜", "tag": "preference"}]}
+{{"facts": [{{"subject": "{who}", "predicate": "在学", "object": "做菜", "fact": "{who}在学做菜", "tag": "preference"}}]}}
 
 对话记录：
 """
+
+_VAGUE_SUBJECTS = {"用户", "对方", "他", "她", "这个人", "该用户", "user", "ta", "TA"}
 
 
 class Extractor:
@@ -45,40 +45,43 @@ class Extractor:
             provider_call = provider.chat
         self.call = provider_call
 
-    def extract(self, events: list) -> list:
+    def build_messages(self, events: list, speaker_name: str = "",
+                       owner_id: str = "") -> tuple:
+        """组装提炼用 messages，返回 (messages, who)"""
+        who = (speaker_name or "").strip() or str(owner_id or "").strip() or "对方"
+        owner = str(owner_id or "").strip() or "未知"
+        lines = [f"{who}：{ev.user_msg}" for ev in events if ev.user_msg]
+        system = SYSTEM_PROMPT_TMPL.format(who=who, owner=owner)
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "\n".join(lines)},
+        ], who
+
+    def extract(self, events: list, speaker_name: str = "",
+                owner_id: str = "") -> list:
         """
-        输入：MemoryEvent 列表
-        返回：[{"subject","predicate","object","fact","source_ids":[...]}, ...]
+        输入：MemoryEvent 列表（属于同一个人）
+        返回：[{"subject","predicate","object","fact","tag","source_ids":[...]}, ...]
         失败（模型报错/JSON 无法解析）抛异常，由调用方决定是否标记已提炼。
-        模型正常返回空 facts 时返回 []。
         """
         if not events:
             return []
 
-        # 组装对话文本，只取用户消息（AI 回复不采信）
-        lines = []
-        for ev in events:
-            lines.append(f"用户：{ev.user_msg}")
-        dialog = "\n".join(lines)
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": dialog},
-        ]
+        messages, who = self.build_messages(events, speaker_name, owner_id)
 
         # 模型调用失败 → 抛异常
         raw = self.call(messages)
 
         # 解析失败 → 抛异常（不静默返回空）
-        facts = self._parse(raw)
+        facts = self._parse(raw, who)
         # 补 source_ids（这批事件共享来源）
         src = [ev.id for ev in events]
         for f in facts:
             f["source_ids"] = src
         return facts
 
-    def _parse(self, raw: str) -> list:
-        """从模型输出解析 JSON 事实列表"""
+    def _parse(self, raw: str, who: str = "用户") -> list:
+        """从模型输出解析 JSON 事实列表；主语归一化为发言人身份"""
         if not raw:
             return []
         # 去掉可能的 markdown 代码块
@@ -104,8 +107,19 @@ class Extractor:
             valid_tags = {"identity", "agreement", "emotion", "preference", "meme", "misc"}
             if tag not in valid_tags:
                 tag = "misc"
+
+            # 主语兜底：模型若仍用“用户”这类模糊称呼，强制改成本人身份
+            subject = (f.get("subject") or "").strip()
+            if not subject or subject in _VAGUE_SUBJECTS:
+                subject = who
+            # fact 开头若是“用户/对方”，替换成本人称呼
+            for vague in _VAGUE_SUBJECTS:
+                if fact_text.startswith(vague):
+                    fact_text = who + fact_text[len(vague):]
+                    break
+
             out.append({
-                "subject": (f.get("subject") or "用户").strip(),
+                "subject": subject,
                 "predicate": (f.get("predicate") or "").strip(),
                 "object": (f.get("object") or "").strip(),
                 "fact": fact_text,
