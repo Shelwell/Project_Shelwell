@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QMessageBox, QFrame, QHeaderView,
 )
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont
 
 from desktop import services
@@ -106,15 +106,13 @@ class MemoryPage(QWidget):
         fl.addLayout(r2)
 
         # ---------- 表格 ----------
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["时间", "会话", "发言人", "用户消息", "AI 回复"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["时间", "会话", "发言人", "用户消息", "AI 回复", "操作"])
         self.table.setFont(QFont("Microsoft YaHei", 9))
         self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
-        hh = self.table.horizontalHeader()
-        for i in range(5):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        self._apply_header_modes()
         self.table.setMinimumHeight(280)
         fl.addWidget(self.table)
 
@@ -216,15 +214,27 @@ class MemoryPage(QWidget):
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         if self.cb_type.currentIndex() == 1:
-            # 语义记忆：7 列，含权重
-            self.table.setColumnCount(7)
+            # 语义记忆：7 列信息 + 操作
+            self.table.setColumnCount(8)
             self.table.setHorizontalHeaderLabels(
-                ["事实", "类型", "权重", "命中", "置信度", "状态", "归档"])
+                ["事实", "类型", "权重", "命中", "置信度", "状态", "归档", "操作"])
         else:
-            self.table.setColumnCount(5)
+            self.table.setColumnCount(6)
             self.table.setHorizontalHeaderLabels(
-                ["时间", "会话", "发言人", "用户消息", "AI 回复"])
+                ["时间", "会话", "发言人", "用户消息", "AI 回复", "操作"])
+        self._apply_header_modes()
         self.load_page(1)
+
+    def _apply_header_modes(self):
+        """列宽：首列自适应，其余按内容，操作列固定窄宽"""
+        hh = self.table.horizontalHeader()
+        n = self.table.columnCount()
+        for i in range(n):
+            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        if n:
+            hh.setSectionResizeMode(0, QHeaderView.Stretch)
+            hh.setSectionResizeMode(n - 1, QHeaderView.Fixed)
+            self.table.setColumnWidth(n - 1, 64)
 
     def reset_filters(self):
         self.ed_keyword.clear()
@@ -272,6 +282,7 @@ class MemoryPage(QWidget):
                     from PySide6.QtGui import QColor
                     item.setForeground(QColor("#999"))
                 self.table.setItem(i, c, item)
+            self.table.setCellWidget(i, 7, self._delete_btn("semantic", f.get("id", "")))
         self.lab_page.setText("第 %d / %d 页" % (self._cur_page, self._pages))
         self.lab_total.setText("共 %d 条" % r["total"])
         self.btn_prev.setEnabled(self._cur_page > 1)
@@ -314,10 +325,52 @@ class MemoryPage(QWidget):
                 item = QTableWidgetItem(str(v))
                 item.setToolTip(str(v))
                 self.table.setItem(i, c, item)
+            self.table.setCellWidget(i, 5, self._delete_btn("episodic", m.get("id", "")))
         self.lab_page.setText("第 %d / %d 页" % (self._cur_page, self._pages))
         self.lab_total.setText("共 %d 条" % r["total"])
         self.btn_prev.setEnabled(self._cur_page > 1)
         self.btn_next.setEnabled(self._cur_page < self._pages)
+
+    # ---------- 单条删除 ----------
+
+    def _delete_btn(self, kind: str, item_id: str):
+        btn = QPushButton("删除")
+        btn.setStyleSheet(
+            "QPushButton{color:#b33;border:1px solid #e0c0c0;border-radius:3px;"
+            "padding:1px 8px;background:#fff;}"
+            "QPushButton:hover{background:#fdecec;}")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(
+            lambda _=False, k=kind, i=item_id: self._confirm_delete(k, i))
+        return btn
+
+    def _confirm_delete(self, kind: str, item_id: str):
+        if not item_id:
+            QMessageBox.warning(self, "无法删除", "这条记录没有 ID，无法单独删除。")
+            return
+        if kind == "semantic":
+            title = "删除语义事实"
+            text = "确定删除这条语义事实？\n\n她从这件事上提取的记忆会一起消失，不可恢复。"
+        else:
+            title = "删除情景记忆"
+            text = ("确定删除这条情景记忆？\n\n"
+                    "归档原文、向量索引、关键词索引会一并删除，不可恢复。")
+        if QMessageBox.question(self, title, text) != QMessageBox.Yes:
+            return
+        fn = (services.delete_semantic_fact if kind == "semantic"
+              else services.delete_episodic_memory)
+        run_async(self, fn, self._on_row_deleted, item_id)
+
+    def _on_row_deleted(self, res):
+        res = res or {}
+        if res.get("ok"):
+            QMessageBox.information(self, "已删除", res.get("message", "删除完成"))
+        else:
+            QMessageBox.warning(self, "删除失败", res.get("message", "未知错误"))
+        self.refresh_stats()
+        if self.cb_type.currentIndex() == 0:
+            self.reload_sessions()
+        self.load_page(self._cur_page)
 
     def prev_page(self):
         if self._cur_page > 1:

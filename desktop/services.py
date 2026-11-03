@@ -622,14 +622,24 @@ def get_memory_stats() -> dict:
         from backend.memory.service import MemoryService
         svc = MemoryService(auto_worker=False)
         st = svc.get_stats()
-        return {
-            "archive": st["archive"]["total"],
-            "vector": st["index"]["vector"],
-            "lexical": st["index"]["lexical"],
-            "sessions": st["archive"]["sessions"],
-        }
     except Exception as e:
         return {"error": str(e)}
+
+    # 语义层单列统计（此前漏返回，导致界面永远显示“语义 0 条”）
+    sem = {}
+    try:
+        from backend.memory.semantic import SemanticStore
+        sem = SemanticStore().stats()
+    except Exception as e:
+        sem = {"error": str(e), "total": 0}
+
+    return {
+        "archive": st["archive"]["total"],
+        "vector": st["index"]["vector"],
+        "lexical": st["index"]["lexical"],
+        "sessions": st["archive"]["sessions"],
+        "semantic": sem,
+    }
 
 
 def list_episodic_memories(page: int = 1, page_size: int = 20,
@@ -740,12 +750,53 @@ def run_consolidate(session_filter: str = "", limit: int = 50,
         return {"error": str(e)}
 
 
-def delete_semantic_fact(fact_id: str) -> bool:
+def delete_semantic_fact(fact_id: str) -> dict:
+    """删除单条语义事实（SQLite 权威表 + 向量索引）"""
+    if not fact_id:
+        return {"ok": False, "message": "缺少事实 ID"}
     try:
         from backend.memory.semantic import SemanticStore
-        return SemanticStore().delete(fact_id)
-    except Exception:
-        return False
+        ok = SemanticStore().delete(fact_id)
+        return {"ok": bool(ok),
+                "message": "已删除 1 条语义事实" if ok else "删除失败（事实可能已不存在）"}
+    except Exception as e:
+        return {"ok": False, "message": "删除失败: %s" % e}
+
+
+def delete_episodic_memory(event_id: str) -> dict:
+    """
+    删除单条情景记忆：归档 JSONL + 向量 + FTS，并摘掉语义事实里对它的来源引用。
+    返回 {"ok": bool, "message": str}
+    """
+    if not event_id:
+        return {"ok": False, "message": "缺少记忆 ID"}
+    msgs = []
+    ok_any = False
+
+    try:
+        from backend.memory.archive import Archive
+        ok = Archive().delete(event_id)
+        msgs.append("归档" + ("已删除" if ok else "未找到"))
+        ok_any = ok_any or ok
+    except Exception as e:
+        msgs.append("归档删除失败: %s" % e)
+
+    try:
+        from backend.memory.indexer import Indexer
+        Indexer().delete(event_id)
+        msgs.append("索引已清理")
+    except Exception as e:
+        msgs.append("索引清理失败: %s" % e)
+
+    try:
+        from backend.memory.semantic import SemanticStore
+        n = SemanticStore().detach_source(event_id)
+        if n:
+            msgs.append("语义来源引用清理 %d 条" % n)
+    except Exception as e:
+        msgs.append("语义来源清理失败: %s" % e)
+
+    return {"ok": ok_any, "message": "；".join(msgs)}
 
 
 def clear_semantic_memory() -> int:
@@ -773,70 +824,99 @@ def list_episodic_sessions() -> list:
 
 def clear_all_memory() -> str:
     """
-    彻底清空全部记忆：归档 JSONL、向量索引、FTS 索引、任务表。
+    彻底清空全部记忆：语义事实、情景归档、向量索引、FTS 关键词索引、任务表。
+
+    关键：SQLite 一律用 DELETE 清表，不删文件。服务进程（QQ 适配层）可能正持有
+    sqlite 句柄，删文件会报 WinError 32（另一个程序正在使用此文件）。
     返回执行日志。
     """
-    import glob
-    import os
+    import sqlite3
     logs = []
 
     def log(m):
         logs.append(m)
 
+    base = ROOT / "memory"
+
+    # 1. 语义事实（SQLite 权威表 + 语义向量）
     try:
-        base = ROOT / "memory"
-
-        # 1. 清空归档 JSONL
-        hdir = base / "history"
-        n_files = 0
-        n_lines = 0
-        if hdir.exists():
-            for f in hdir.glob("*.jsonl"):
-                try:
-                    n_lines += sum(1 for _ in f.open(encoding="utf-8"))
-                except Exception:
-                    pass
-                os.remove(f)
-                n_files += 1
-        log("归档: 删除 %d 个文件, %d 条记录" % (n_files, n_lines))
-
-        # 2. 删除向量 collection
-        try:
-            import chromadb
-            client = chromadb.PersistentClient(
-                path=str(base / "vector_store" / "chroma_db"))
-            names = [c.name if hasattr(c, "name") else c
-                     for c in client.list_collections()]
-            removed = []
-            for n in names:
-                client.delete_collection(n)
-                removed.append(n)
-            log("向量: 删除 collection %s" % (removed or "无"))
-        except Exception as e:
-            log("向量清理失败: %s" % e)
-
-        # 3. 删除 FTS 索引文件
-        fts = base / "index" / "memory_fts.sqlite3"
-        for suffix in ["", "-wal", "-shm"]:
-            p = Path(str(fts) + suffix)
-            if p.exists():
-                os.remove(p)
-        log("FTS 索引: 已删除")
-
-        # 4. 清空任务表
-        jobs = base / "index" / "jobs.sqlite3"
-        for suffix in ["", "-wal", "-shm"]:
-            p = Path(str(jobs) + suffix)
-            if p.exists():
-                os.remove(p)
-        log("任务表: 已删除")
-
-        log("")
-        log("清空完成")
-        return "\n".join(logs)
+        from backend.memory.semantic import SemanticStore
+        n = SemanticStore().clear_all()
+        log("语义: 删除 %d 条事实" % n)
     except Exception as e:
-        log("清空异常: %s" % e)
-        return "\n".join(logs)
+        log("语义清理失败: %s" % e)
+
+    # 2. 情景归档 JSONL（真相源，按文件删）
+    hdir = base / "history"
+    n_files = 0
+    n_lines = 0
+    if hdir.exists():
+        for f in hdir.glob("*.jsonl"):
+            try:
+                n_lines += sum(1 for line in f.open(encoding="utf-8") if line.strip())
+            except Exception:
+                pass
+            try:
+                f.unlink()
+                n_files += 1
+            except Exception as e:
+                log("归档删除失败 %s: %s" % (f.name, e))
+    log("归档: 删除 %d 个文件, %d 条记录" % (n_files, n_lines))
+
+    # 3. 删除向量 collection
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(
+            path=str(base / "vector_store" / "chroma_db"))
+        removed, failed = [], []
+        for c in list(client.list_collections()):
+            name = c.name if hasattr(c, "name") else c
+            try:
+                client.delete_collection(name)
+                removed.append(name)
+            except Exception as e:
+                failed.append("%s(%s)" % (name, e))
+        log("向量: 删除 collection %s" % (removed or "无"))
+        if failed:
+            log("向量: 以下 collection 删除失败 %s" % "; ".join(failed))
+    except Exception as e:
+        log("向量清理失败: %s" % e)
+
+    # 4. FTS 关键词索引：清表不删文件
+    try:
+        fts = base / "index" / "memory_fts.sqlite3"
+        if fts.exists():
+            con = sqlite3.connect(str(fts), timeout=10)
+            try:
+                con.execute("DELETE FROM fts_episodic")
+                con.commit()
+            finally:
+                con.close()
+            log("FTS 索引: 已清空")
+        else:
+            log("FTS 索引: 文件不存在，跳过")
+    except Exception as e:
+        log("FTS 清理失败: %s" % e)
+
+    # 5. 任务表：同样清表
+    try:
+        jobs = base / "index" / "jobs.sqlite3"
+        if jobs.exists():
+            con = sqlite3.connect(str(jobs), timeout=10)
+            try:
+                con.execute("DELETE FROM jobs")
+                con.commit()
+            finally:
+                con.close()
+            log("任务表: 已清空")
+        else:
+            log("任务表: 文件不存在，跳过")
+    except Exception as e:
+        log("任务表清理失败: %s" % e)
+
+    log("")
+    log("清空完成")
+    return "\n".join(logs)
 
 
 def restart_service(name: str) -> str:
