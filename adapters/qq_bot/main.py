@@ -20,6 +20,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from backend.orchestrator import Orchestrator
 from engagement import EngagementTracker
+from shadow import ShadowRecorder
 from backend.config_loader import get
 
 logging.basicConfig(level=logging.INFO, format="[QQ] %(asctime)s %(message)s")
@@ -41,6 +42,16 @@ class QQBot:
         self.trigger_keywords = get("qq_bot.trigger_keywords", []) or []
         # 自动接话热度状态机
         self.engagement = EngagementTracker(get("qq_bot.auto_engage", {}) or {})
+        # 影子模式：只记录新策略的接话决策，不改变实际发送行为
+        self.shadow = None
+        self.bot_name = ""
+        try:
+            _sh_cfg = get("qq_bot.shadow", {}) or {}
+            if _sh_cfg.get("enabled"):
+                self.shadow = ShadowRecorder(_sh_cfg, str(_PROJECT_ROOT))
+                log.info("影子模式已启用 -> %s", self.shadow.log_path)
+        except Exception as e:
+            log.warning("影子模式初始化失败: %s", e)
         # 消息缓存：message_id -> {sender, text, time}，用于引用回复
         self.message_cache = OrderedDict()
         self.cache_max = 100
@@ -127,8 +138,35 @@ class QQBot:
             # 观察这条消息，更新热度
             heat = self.engagement.observe(group_id, user_id, text,
                                            is_at_me=at_me, is_question=is_q)
-            # 判断是否该接话
-            if at_me or self.engagement.should_engage(group_id, is_at_me=at_me):
+            legacy_engage = at_me or self.engagement.should_engage(
+                group_id, is_at_me=at_me)
+
+            # 影子模式：记录新策略的决策，不改变下面的实际行为
+            if self.shadow is not None:
+                try:
+                    reply_id = self.extract_reply(evt.get("message"))
+                    quoted_sender = ""
+                    if reply_id and reply_id in self.message_cache:
+                        quoted_sender = self.message_cache[reply_id].get("sender", "")
+                    rec = self.shadow.observe(
+                        group_id=group_id, sender_id=user_id,
+                        sender_name=self._sender_name(evt), text=text,
+                        ts=float(evt.get("time") or 0) or None,
+                        at_me=self._is_at_me_explicit(evt), at_other=self._is_at_other(evt),
+                        is_question=is_q, reply_to_id=reply_id or "",
+                        reply_to_sender=quoted_sender, bot_name=self.bot_name,
+                        legacy_engage=legacy_engage,
+                        msg_id=str(evt.get("message_id") or ""))
+                    d = (rec or {}).get("decision", {})
+                    log.info("[Shadow] %s reason=%s score=%.2f legacy=%s | %s",
+                             "接" if d.get("respond") else "不接",
+                             d.get("reason", "?"), d.get("score", 0.0),
+                             legacy_engage, text[:30])
+                except Exception as e:
+                    log.warning("影子模式记录失败: %s", e)
+
+            # 判断是否该接话（沿用现有策略，影子模式不改变它）
+            if legacy_engage:
                 need_engage = True
                 log.info("接话 [群%s] heat=%.1f at_me=%s", group_id, heat, at_me)
             else:
@@ -178,6 +216,12 @@ class QQBot:
         else:
             final_reply_to = None
         await self.send_reply(evt, reply, reply_to=final_reply_to, at_user=None)
+        # 影子模式：记录她自己说了什么（供"回复我"/话题连续性判定）
+        if msg_type == "group" and self.shadow is not None:
+            try:
+                self.shadow.on_bot_spoke(group_id, reply)
+            except Exception as e:
+                log.warning("影子模式记录发言失败: %s", e)
         # 接话后热度减半 + 进入冷却
         if msg_type == "group" and need_engage:
             self.engagement.on_engaged(group_id)
@@ -223,6 +267,38 @@ class QQBot:
             return "".join(parts).strip()
         return ""
 
+    def _sender_name(self, evt):
+        """发言人显示名：群名片 > 昵称 > QQ 号"""
+        sender = evt.get("sender") or {}
+        return (sender.get("card") or sender.get("nickname")
+                or str(evt.get("user_id", "")))
+
+    def _is_at_me_explicit(self, evt):
+        """是否显式 @ 了我（不含关键词，影子模式用）"""
+        message = evt.get("message")
+        if not isinstance(message, list):
+            return False
+        self_id = str(evt.get("self_id") or self.self_id or "")
+        for seg in message:
+            if seg.get("type") == "at":
+                qq = str(seg.get("data", {}).get("qq", ""))
+                if qq and qq == self_id:
+                    return True
+        return False
+
+    def _is_at_other(self, evt):
+        """是否 @ 了别人（不含 @全体）"""
+        message = evt.get("message")
+        if not isinstance(message, list):
+            return False
+        self_id = str(evt.get("self_id") or self.self_id or "")
+        for seg in message:
+            if seg.get("type") == "at":
+                qq = str(seg.get("data", {}).get("qq", ""))
+                if qq and qq != self_id and qq != "all":
+                    return True
+        return False
+
     def is_at_me(self, evt, text):
         """判断是否是强信号：@我 或 叫名字（关键词）"""
         # @ 检测
@@ -261,12 +337,15 @@ class QQBot:
         """未触发的群消息：只归档不回复"""
         user_id = str(evt.get("user_id", ""))
         group_id = str(evt.get("group_id", ""))
+        sender = evt.get("sender") or {}
+        speaker_name = sender.get("card") or sender.get("nickname") or user_id
         session_id = f"qqg:{group_id}:{user_id}"
         try:
             self.orchestrator.context.archive_turn(
                 user_msg=text, ai_msg="",
                 session_id=session_id,
                 speaker_id=user_id, channel_type="group", channel_id=group_id,
+                speaker_name=speaker_name,
             )
         except Exception as e:
             log.warning("群消息归档失败: %s", e)
@@ -282,12 +361,15 @@ class QQBot:
         # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
         history.append({"role": "user", "content": text})
 
-        # 构造"谁在说话"的上下文说明
+        # 构造"谁在说话"的上下文说明，并取出昵称供记忆归属使用
         speaker_hint = ""
-        if channel_type == "group" and evt:
+        speaker_name = ""
+        if evt:
             sender = evt.get("sender") or {}
-            card = sender.get("card") or sender.get("nickname") or speaker_id
-            speaker_hint = f"当前发言者：{card}"
+            speaker_name = (sender.get("card") or sender.get("nickname")
+                            or str(speaker_id or ""))
+        if channel_type == "group" and evt:
+            speaker_hint = f"当前发言者：{speaker_name or speaker_id}"
 
         # 引用说明
         quote_hint = ""
@@ -310,7 +392,7 @@ class QQBot:
                 lambda: self.orchestrator.chat(
                     list(history), session_id=session_id, current_query=text,
                     speaker_id=speaker_id, channel_type=channel_type,
-                    channel_id=channel_id,
+                    channel_id=channel_id, speaker_name=speaker_name,
                     speaker_hint=speaker_hint, quote_hint=quote_hint,
                     keep_alive=keep_alive,
                 ),
@@ -399,6 +481,7 @@ class QQBot:
             with open(self._status_path, "w", encoding="utf-8") as f:
                 _json.dump(data, f, ensure_ascii=False, indent=2)
             if info:
+                self.bot_name = info.get("nickname") or self.bot_name
                 log.info("账号信息已更新: %s (%s)",
                          info.get("nickname", "?"), info.get("user_id", "?"))
         except Exception as e:

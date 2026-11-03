@@ -41,12 +41,13 @@ Ollama_models/
 *.onnx
 
 # ---------- 训练数据与产物 ----------
-data/
+/data/
 !data/.gitkeep
 
 # ---------- 运行时数据 ----------
-memory/
-logs/
+# 注意：必须锚定到根目录，否则 backend/memory/ 这类源码目录会被一起忽略
+/memory/
+/logs/
 *.log
 
 # ---------- 数据库 ----------
@@ -57,6 +58,10 @@ logs/
 # ---------- 第三方工具（外置到 E:\Tools） ----------
 tools/
 plugins/
+
+# ---------- 临时预览构建（切换正式产物后可删） ----------
+/dist_preview/
+/build_preview/
 
 # ---------- IDE / 编辑器 ----------
 .idea/

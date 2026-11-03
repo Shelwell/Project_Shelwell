@@ -5,6 +5,7 @@
 from backend.config_loader import get
 from backend.context_manager import ContextManager
 from backend.llm import provider
+from backend.reply_format import split_bubbles
 
 
 # 模型偶尔会把系统提示词当回复输出，这类内容不能进记忆库
@@ -46,7 +47,7 @@ class Orchestrator:
 
     def chat(self, messages: list, session_id: str = "default", current_query: str = None,
              speaker_id: str = None, channel_type: str = None, channel_id: str = None,
-             speaker_hint: str = "", quote_hint: str = "",
+             speaker_name: str = "", speaker_hint: str = "", quote_hint: str = "",
              keep_alive: str = None) -> dict:
         """
         执行一次完整对话。
@@ -70,14 +71,12 @@ class Orchestrator:
 
         # 1. 构建上下文（短期 + 长期记忆 + 人格指令）
         try:
-            try:
-                from backend.runtime_config import get_runtime
-                _prov = (get_runtime().get("active.provider") or "ollama").strip()
-            except Exception:
-                _prov = "ollama"
+            # 人格指令一律用独立 system 消息承载：Ollama 的 chat template
+            # （Mistral Nemo / Qwen 系）都支持 system role；塞进 user 消息会让
+            # 指令优先级降到最低，且聊到 30 轮后完全衰减。
             prepared = self.context.prepare_context(
                 messages, current_query=current_query, session_id=session_id,
-                system_as_role=(_prov == "openai_compatible"),
+                system_as_role=True,
                 speaker_id=speaker_id, channel_type=channel_type,
                 channel_id=channel_id,
                 speaker_hint=speaker_hint, quote_hint=quote_hint,
@@ -92,10 +91,16 @@ class Orchestrator:
         except Exception as e:
             return {"reply": "", "ok": False, "error": f"model_error: {e}"}
 
-        # 3. 清洗
+        # 3. 清洗 + 切气泡（格式交给代码，模型只管内容）
         reply = self._clean_reply(raw_reply)
-        if not reply:
+        bubbles = split_bubbles(
+            reply,
+            limit=get("reply.max_chars_per_bubble", 40),
+            max_bubbles=get("reply.max_bubbles", 3),
+        )
+        if not bubbles:
             return {"reply": "", "ok": False, "error": "empty_reply"}
+        reply = "\n".join(bubbles)
 
         # 4. 归档（跳过 prompt 污染 / 纯问梗）
         if current_query and _looks_like_prompt(reply):
@@ -109,11 +114,12 @@ class Orchestrator:
                     speaker_id=speaker_id or "",
                     channel_type=channel_type or "",
                     channel_id=channel_id or "",
+                    speaker_name=speaker_name or "",
                 )
             except Exception as e:
                 print(f"[Orchestrator] 归档失败（不影响对话）: {e}")
 
-        return {"reply": reply, "ok": True, "error": None}
+        return {"reply": reply, "bubbles": bubbles, "ok": True, "error": None}
 
     def shutdown(self):
         """释放编排层持有的资源"""

@@ -16,22 +16,23 @@ class ProviderError(RuntimeError):
     pass
 
 
-def chat(messages: list, keep_alive: str = None) -> str:
+def chat(messages: list, keep_alive: str = None, model_override: str = None) -> str:
     """
     统一对话入口。按 runtime.active.provider 分发。
     keep_alive: Ollama 模型驻留时长（如 "30m"/"5m"），None 时用配置默认值。
+    model_override: 临时指定模型（如语义提炼用的小模型），None 时用 active.model。
     返回模型原始文本；失败抛 ProviderError。
     """
     import time
     rt = get_runtime()
     provider = (rt.get("active.provider") or "ollama").strip()
-    model = rt.get("active.model") or ""
+    model = model_override or rt.get("active.model") or ""
     t0 = time.time()
     try:
         if provider == "ollama":
-            text = _chat_ollama(messages, rt, keep_alive)
+            text = _chat_ollama(messages, rt, keep_alive, model_override)
         elif provider == "openai_compatible":
-            text = _chat_openai(messages, rt)
+            text = _chat_openai(messages, rt, model_override)
         else:
             raise ProviderError(f"未知 provider: {provider}")
     except Exception as e:
@@ -61,8 +62,9 @@ def _gen_options(rt) -> dict:
     return {"temperature": temp, "num_ctx": num_ctx, "num_predict": num_predict}
 
 
-def _chat_ollama(messages: list, rt, keep_alive: str = None) -> str:
-    model = rt.get("active.model") or get("model.base", "qwen3.5:9b")
+def _chat_ollama(messages: list, rt, keep_alive: str = None,
+                 model_override: str = None) -> str:
+    model = model_override or rt.get("active.model") or get("model.base", "qwen3.5:9b")
     url = f"{get('ollama.url', 'http://localhost:11434')}/api/chat"
     opts = _gen_options(rt)
     # 未指定时用配置默认值（默认 10m）
@@ -89,11 +91,11 @@ def _chat_ollama(messages: list, rt, keep_alive: str = None) -> str:
     return resp.json().get("message", {}).get("content", "")
 
 
-def _chat_openai(messages: list, rt) -> str:
+def _chat_openai(messages: list, rt, model_override: str = None) -> str:
     cfg = rt.get("providers.openai_compatible", {}) or {}
     base_url = (cfg.get("base_url") or "").rstrip("/")
     api_key = cfg.get("api_key") or ""
-    model = cfg.get("model") or rt.get("active.model") or ""
+    model = model_override or cfg.get("model") or rt.get("active.model") or ""
     timeout = cfg.get("timeout") or 120
     if not base_url or not model:
         raise ProviderError("openai_compatible 未配置 base_url 或 model")

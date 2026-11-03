@@ -4,9 +4,9 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
-    QMessageBox, QFrame, QHeaderView,
+    QMessageBox, QFrame, QHeaderView, QCheckBox, QTimeEdit,
 )
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt, QTime
 from PySide6.QtGui import QFont
 
 from desktop import services
@@ -48,14 +48,46 @@ class MemoryPage(QWidget):
 
         # ---------- 提炼 ----------
         con_box = QGroupBox("提炼")
-        col = QHBoxLayout(con_box)
+        cv = QVBoxLayout(con_box)
+
+        r0 = QHBoxLayout()
         self.btn_consolidate = QPushButton("提炼情景记忆 → 语义事实")
         self.btn_consolidate.clicked.connect(self.do_consolidate)
-        col.addWidget(self.btn_consolidate)
+        r0.addWidget(self.btn_consolidate)
         self.lab_con = QLabel("将未提炼的情景记忆交给模型，提取稳定事实存入语义库。")
         self.lab_con.setStyleSheet("color: #888; font-size: 12px;")
-        col.addWidget(self.lab_con)
-        col.addStretch()
+        r0.addWidget(self.lab_con)
+        r0.addStretch()
+        cv.addLayout(r0)
+
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("提炼模型"))
+        self.cb_ex_model = QComboBox()
+        self.cb_ex_model.setMinimumWidth(210)
+        self.cb_ex_model.setToolTip(
+            "语义提炼需要生成模型；bge-m3 是嵌入模型，只能做向量检索，无法提炼")
+        r1.addWidget(self.cb_ex_model)
+
+        self.chk_auto = QCheckBox("自动提炼")
+        self.chk_auto.stateChanged.connect(lambda _=0: self._update_sched_label())
+        r1.addWidget(self.chk_auto)
+
+        self.ed_time = QTimeEdit()
+        self.ed_time.setDisplayFormat("HH:mm")
+        self.ed_time.setTime(QTime(23, 0))
+        self.ed_time.timeChanged.connect(lambda _=None: self._update_sched_label())
+        r1.addWidget(self.ed_time)
+
+        btn_save = QPushButton("保存设置")
+        btn_save.clicked.connect(self.save_schedule)
+        r1.addWidget(btn_save)
+
+        self.lab_sched = QLabel("")
+        self.lab_sched.setStyleSheet("color: #888; font-size: 12px;")
+        r1.addWidget(self.lab_sched)
+        r1.addStretch()
+        cv.addLayout(r1)
+
         layout.addWidget(con_box)
 
         self._clear_count = 0
@@ -106,15 +138,13 @@ class MemoryPage(QWidget):
         fl.addLayout(r2)
 
         # ---------- 表格 ----------
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["时间", "会话", "发言人", "用户消息", "AI 回复"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["时间", "会话", "发言人", "用户消息", "AI 回复", "操作"])
         self.table.setFont(QFont("Microsoft YaHei", 9))
         self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
-        hh = self.table.horizontalHeader()
-        for i in range(5):
-            hh.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        self._apply_header_modes()
         self.table.setMinimumHeight(280)
         fl.addWidget(self.table)
 
@@ -142,6 +172,7 @@ class MemoryPage(QWidget):
         self.refresh_stats()
         self.reload_sessions()
         self.load_page(1)
+        self.load_schedule()
 
     # ---------- 统计 ----------
 
@@ -213,18 +244,40 @@ class MemoryPage(QWidget):
 
     def on_type_changed(self):
         self.table.clearSpans()
+        # 必须先清空行：否则上一种模式留下的“删除”按钮会残留在新表格的单元格上
+        # （情景模式的操作列索引 5，正好是语义模式的“状态”列）
+        self.table.setRowCount(0)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         if self.cb_type.currentIndex() == 1:
-            # 语义记忆：7 列，含权重
-            self.table.setColumnCount(7)
+            # 语义记忆：7 列信息 + 操作
+            self.table.setColumnCount(8)
             self.table.setHorizontalHeaderLabels(
-                ["事实", "类型", "权重", "命中", "置信度", "状态", "归档"])
+                ["事实", "类型", "权重", "命中", "置信度", "状态", "归档", "操作"])
         else:
-            self.table.setColumnCount(5)
+            self.table.setColumnCount(6)
             self.table.setHorizontalHeaderLabels(
-                ["时间", "会话", "发言人", "用户消息", "AI 回复"])
+                ["时间", "会话", "发言人", "用户消息", "AI 回复", "操作"])
+        self._apply_header_modes()
         self.load_page(1)
+
+    def _apply_header_modes(self):
+        """列宽可拖动：全部 Interactive，切换类型时套用一组默认宽度"""
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.setStretchLastSection(False)
+        hh.setMinimumSectionSize(40)
+        n = self.table.columnCount()
+        defaults = {
+            6: [150, 110, 90, 260, 260],
+            8: [320, 90, 60, 50, 64, 70, 64],
+        }.get(n, [])
+        for i in range(n):
+            if i == n - 1:
+                self.table.setColumnWidth(i, 64)      # 操作列
+            else:
+                self.table.setColumnWidth(
+                    i, defaults[i] if i < len(defaults) else 100)
 
     def reset_filters(self):
         self.ed_keyword.clear()
@@ -253,6 +306,7 @@ class MemoryPage(QWidget):
         self._cur_page = r["page"]
         self._pages = r["pages"]
         items = r["items"]
+        self.table.setRowCount(0)   # 清掉上一页残留的按钮控件
         self.table.setRowCount(len(items))
         for i, f in enumerate(items):
             archived = f.get("archived", False)
@@ -272,6 +326,7 @@ class MemoryPage(QWidget):
                     from PySide6.QtGui import QColor
                     item.setForeground(QColor("#999"))
                 self.table.setItem(i, c, item)
+            self.table.setCellWidget(i, 7, self._delete_btn("semantic", f.get("id", "")))
         self.lab_page.setText("第 %d / %d 页" % (self._cur_page, self._pages))
         self.lab_total.setText("共 %d 条" % r["total"])
         self.btn_prev.setEnabled(self._cur_page > 1)
@@ -295,6 +350,62 @@ class MemoryPage(QWidget):
         self.refresh_stats()
         self.load_page(1)
 
+    # ---------- 自动提炼设置 ----------
+
+    def load_schedule(self):
+        run_async(self, services.get_memory_schedule, self._on_schedule)
+
+    def _on_schedule(self, s):
+        if s.get("error"):
+            self.lab_sched.setText("读取设置失败")
+            return
+        cur_model = s.get("model") or ""
+        self.chk_auto.setChecked(bool(s.get("auto")))
+        try:
+            hh, mm = str(s.get("time") or "23:00").split(":")
+            self.ed_time.setTime(QTime(int(hh), int(mm)))
+        except Exception:
+            self.ed_time.setTime(QTime(23, 0))
+        self._update_sched_label()
+        run_async(self, services.list_ollama_models,
+                  lambda models: self._on_models(models, cur_model))
+
+    def _on_models(self, models, cur):
+        self.cb_ex_model.blockSignals(True)
+        self.cb_ex_model.clear()
+        self.cb_ex_model.addItem("跟随当前对话模型", "")
+        for m in models or []:
+            self.cb_ex_model.addItem(m, m)
+        idx = self.cb_ex_model.findData(cur)
+        if cur and idx < 0:
+            self.cb_ex_model.addItem(cur + "（当前设置）", cur)
+            idx = self.cb_ex_model.count() - 1
+        self.cb_ex_model.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cb_ex_model.blockSignals(False)
+
+    def save_schedule(self):
+        t = self.ed_time.time().toString("HH:mm")
+        model = self.cb_ex_model.currentData() or ""
+        run_async(self, services.save_memory_schedule, self._on_saved,
+                  self.chk_auto.isChecked(), t, model, 50)
+
+    def _on_saved(self, r):
+        if r.get("ok"):
+            self.lab_sched.setText("已保存")
+            QMessageBox.information(self, "已保存", r.get("message", "设置已保存"))
+        else:
+            QMessageBox.warning(self, "保存失败", r.get("message", "未知错误"))
+
+    def _update_sched_label(self):
+        if not hasattr(self, "lab_sched"):
+            return
+        if self.chk_auto.isChecked():
+            self.lab_sched.setText(
+                "每天 %s 自动提炼（需 QQ 服务运行）"
+                % self.ed_time.time().toString("HH:mm"))
+        else:
+            self.lab_sched.setText("自动提炼已关闭")
+
     def _on_memories(self, r):
         self.table.clearSpans()
         if r.get("error"):
@@ -303,6 +414,7 @@ class MemoryPage(QWidget):
         self._cur_page = r["page"]
         self._pages = r["pages"]
         items = r["items"]
+        self.table.setRowCount(0)   # 清掉上一页残留的按钮控件
         self.table.setRowCount(len(items))
         for i, m in enumerate(items):
             ts = (m.get("timestamp") or "")[:19].replace("T", " ")
@@ -314,10 +426,52 @@ class MemoryPage(QWidget):
                 item = QTableWidgetItem(str(v))
                 item.setToolTip(str(v))
                 self.table.setItem(i, c, item)
+            self.table.setCellWidget(i, 5, self._delete_btn("episodic", m.get("id", "")))
         self.lab_page.setText("第 %d / %d 页" % (self._cur_page, self._pages))
         self.lab_total.setText("共 %d 条" % r["total"])
         self.btn_prev.setEnabled(self._cur_page > 1)
         self.btn_next.setEnabled(self._cur_page < self._pages)
+
+    # ---------- 单条删除 ----------
+
+    def _delete_btn(self, kind: str, item_id: str):
+        btn = QPushButton("删除")
+        btn.setStyleSheet(
+            "QPushButton{color:#b33;border:1px solid #e0c0c0;border-radius:3px;"
+            "padding:1px 8px;background:#fff;}"
+            "QPushButton:hover{background:#fdecec;}")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.clicked.connect(
+            lambda _=False, k=kind, i=item_id: self._confirm_delete(k, i))
+        return btn
+
+    def _confirm_delete(self, kind: str, item_id: str):
+        if not item_id:
+            QMessageBox.warning(self, "无法删除", "这条记录没有 ID，无法单独删除。")
+            return
+        if kind == "semantic":
+            title = "删除语义事实"
+            text = "确定删除这条语义事实？\n\n她从这件事上提取的记忆会一起消失，不可恢复。"
+        else:
+            title = "删除情景记忆"
+            text = ("确定删除这条情景记忆？\n\n"
+                    "归档原文、向量索引、关键词索引会一并删除，不可恢复。")
+        if QMessageBox.question(self, title, text) != QMessageBox.Yes:
+            return
+        fn = (services.delete_semantic_fact if kind == "semantic"
+              else services.delete_episodic_memory)
+        run_async(self, fn, self._on_row_deleted, item_id)
+
+    def _on_row_deleted(self, res):
+        res = res or {}
+        if res.get("ok"):
+            QMessageBox.information(self, "已删除", res.get("message", "删除完成"))
+        else:
+            QMessageBox.warning(self, "删除失败", res.get("message", "未知错误"))
+        self.refresh_stats()
+        if self.cb_type.currentIndex() == 0:
+            self.reload_sessions()
+        self.load_page(self._cur_page)
 
     def prev_page(self):
         if self._cur_page > 1:

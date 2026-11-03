@@ -138,6 +138,7 @@ E:\Shelwell\
 | 视觉管道 | `backend/vision_pipeline.py`（待建） | 图片→文字描述，喂给文本模型 | 规划 |
 | 表情包管理 | `backend/sticker_manager.py`（待建） | 图库入库、打标、按情绪选图 | 规划 |
 | 场景系统 | `backend/scenario_manager.py`（待建） | 场景配置注入，动态调整语气 | 规划 |
+| 群聊接话决策 | `backend/group_policy.py` | @/回复我/热聊/静默/兴趣计分，决定"该不该接话" | 已有（影子模式） |
 | 插件管理 | `backend/plugin_manager.py` | 插件发现/加载/钩子调度 | 规划 |
 
 **规则**：L3 模块之间可横向调用（如 context_manager 调 memory_retriever），但不得依赖 L4/L5。
@@ -252,7 +253,9 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `ollama.url` / `chat_timeout` / `embedding_timeout` | Ollama 服务 |
 | `generation.temperature` / `num_predict` / `num_ctx` / `think` | 推理参数 |
 | `context.max_length` / `memory_enabled` | 上下文 |
-| `memory.top_k` / `min_similarity` / `collection_name` / `bubble_separator` | 记忆检索 |
+| `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索 |
+| `reply.max_chars_per_bubble` / `max_bubbles` | 回复气泡拆分（代码负责格式） |
+| `qq_bot.shadow.*` | 群聊接话影子模式：开关、日志路径、阈值、活跃/静默时段、冷却、称呼别名 |
 | `ui.*` | 界面 |
 
 `config/runtime.yaml`（运行期可变，控制台读写，与上面部署期配置分离）：
@@ -265,6 +268,10 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `active.model` | 当前模型名 |
 | `active.plugins` | 启用的插件列表 |
 | `providers.openai_compatible.*` | 远程 API 的 base_url / api_key / model |
+| `memory.extractor_model` | 语义提炼用模型；空串=跟随 `active.model`（bge-m3 是嵌入模型，不能提炼） |
+| `memory.auto_consolidate` | 每日自动提炼开关（bool） |
+| `memory.consolidate_time` | 自动提炼时间，本地时间 `HH:MM` |
+| `memory.consolidate_limit` | 单次自动提炼最多处理多少条情景记忆 |
 
 **新增配置规则**：
 - 按功能分组，不散落
