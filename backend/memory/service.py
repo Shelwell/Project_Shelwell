@@ -5,6 +5,8 @@
 
 import threading
 import time
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +66,10 @@ class MemoryService:
             print(f"[Memory] 语义存储初始化失败，降级: {e}")
         self._worker_thread = None
         self._stop_flag = threading.Event()
+        # 自动提炼：标记文件记录“今天是否已经跑过”
+        base = Path(self.archive.history_dir).parent
+        self._auto_marker = base / "index" / "last_auto_consolidate.txt"
+        self._auto_running = False
         # 进程启动时恢复上次崩溃遗留的 running 任务
         self.jobs.recover_stale()
         if auto_worker:
@@ -419,10 +425,88 @@ class MemoryService:
                     self.run_once("index")
                 except Exception as e:
                     print(f"[Memory] 工作线程异常: {e}")
+                try:
+                    self._maybe_auto_consolidate()
+                except Exception as e:
+                    print(f"[Memory] 自动提炼调度异常: {e}")
                 self._stop_flag.wait(interval)
 
         self._worker_thread = threading.Thread(target=loop, daemon=True, name="memory-worker")
         self._worker_thread.start()
+
+    # ---------- 自动提炼（每日定时） ----------
+
+    @staticmethod
+    def _auto_settings() -> tuple:
+        """读 runtime 配置：返回 (enabled, "HH:MM", limit)"""
+        try:
+            from backend.runtime_config import get_runtime
+            rt = get_runtime()
+            enabled = bool(rt.get("memory.auto_consolidate", False))
+            hhmm = str(rt.get("memory.consolidate_time", "") or "").strip()
+            limit = int(rt.get("memory.consolidate_limit", 50) or 50)
+            return enabled, hhmm, limit
+        except Exception:
+            return False, "", 50
+
+    def _last_auto_date(self) -> str:
+        try:
+            lines = self._auto_marker.read_text(encoding="utf-8").strip().splitlines()
+            return lines[0].strip() if lines else ""
+        except Exception:
+            return ""
+
+    def auto_due_at(self, now: datetime, last_date: str = "",
+                    enabled: bool = None, hhmm: str = None,
+                    limit: int = None):
+        """
+        判断此刻是否该自动提炼。返回 limit 表示该跑，None 表示不跑。
+        参数可注入，便于单测；未传时读 runtime。
+        """
+        if enabled is None or hhmm is None or limit is None:
+            e, t, n = self._auto_settings()
+            enabled = e if enabled is None else enabled
+            hhmm = t if hhmm is None else hhmm
+            limit = n if limit is None else limit
+        if not enabled or not hhmm:
+            return None
+        m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", hhmm)
+        if not m:
+            return None
+        target = "%02d:%s" % (int(m.group(1)), m.group(2))
+        if now.strftime("%H:%M") != target:
+            return None
+        if last_date == now.strftime("%Y-%m-%d"):
+            return None          # 今天已经跑过
+        return limit
+
+    def _maybe_auto_consolidate(self):
+        if self._auto_running:
+            return
+        limit = self.auto_due_at(datetime.now(), last_date=self._last_auto_date())
+        if not limit:
+            return
+        self._auto_running = True
+        threading.Thread(target=self._run_auto_consolidate, args=(limit,),
+                         daemon=True, name="auto-consolidate").start()
+
+    def _run_auto_consolidate(self, limit: int):
+        try:
+            r = self.consolidate(limit=limit)
+        except Exception as e:
+            print(f"[Memory] 自动提炼失败: {e}")
+            self._auto_running = False
+            return
+        if not r.get("error"):
+            today = datetime.now().strftime("%Y-%m-%d")
+            try:
+                self._auto_marker.parent.mkdir(parents=True, exist_ok=True)
+                self._auto_marker.write_text(today + "\n", encoding="utf-8")
+            except Exception as e:
+                print(f"[Memory] 自动提炼标记写入失败: {e}")
+        print(f"[Memory] 自动提炼: 处理 {r.get('processed', 0)} 条情景, "
+              f"新增 {r.get('facts_new', 0)} 条事实, 失败 {r.get('failed', 0)}")
+        self._auto_running = False
 
     def stop_worker(self):
         self._stop_flag.set()

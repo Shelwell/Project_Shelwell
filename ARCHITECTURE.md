@@ -265,6 +265,10 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `active.model` | 当前模型名 |
 | `active.plugins` | 启用的插件列表 |
 | `providers.openai_compatible.*` | 远程 API 的 base_url / api_key / model |
+| `memory.extractor_model` | 语义提炼用模型；空串=跟随 `active.model`（bge-m3 是嵌入模型，不能提炼） |
+| `memory.auto_consolidate` | 每日自动提炼开关（bool） |
+| `memory.consolidate_time` | 自动提炼时间，本地时间 `HH:MM` |
+| `memory.consolidate_limit` | 单次自动提炼最多处理多少条情景记忆 |
 
 **新增配置规则**：
 - 按功能分组，不散落

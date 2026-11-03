@@ -808,6 +808,45 @@ def clear_semantic_memory() -> int:
         return 0
 
 
+# ---------- 自动提炼设置（runtime.yaml，QQ 服务线程每 5 秒读一次） ----------
+
+def get_memory_schedule() -> dict:
+    try:
+        from backend.runtime_config import get_runtime
+        rt = get_runtime()
+        return {
+            "auto": bool(rt.get("memory.auto_consolidate", False)),
+            "time": str(rt.get("memory.consolidate_time", "23:00") or "23:00"),
+            "model": str(rt.get("memory.extractor_model", "") or ""),
+            "limit": int(rt.get("memory.consolidate_limit", 50) or 50),
+        }
+    except Exception as e:
+        return {"error": str(e), "auto": False, "time": "23:00", "model": "", "limit": 50}
+
+
+def save_memory_schedule(auto: bool, time_str: str, model: str = "",
+                         limit: int = 50) -> dict:
+    try:
+        import re as _re
+        t = (time_str or "").strip()
+        m = _re.match(r"^(\d{1,2}):(\d{2})$", t)
+        if not m:
+            return {"ok": False, "message": "时间格式应为 HH:MM"}
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return {"ok": False, "message": "时间超出范围"}
+        from backend.runtime_config import get_runtime
+        get_runtime().update({"memory": {
+            "auto_consolidate": bool(auto),
+            "consolidate_time": "%02d:%02d" % (hh, mm),
+            "extractor_model": (model or "").strip(),
+            "consolidate_limit": int(limit or 50),
+        }})
+        return {"ok": True, "message": "已保存"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
 def list_episodic_sessions() -> list:
     """列出情景记忆里出现过的会话标识（去重排序）"""
     try:

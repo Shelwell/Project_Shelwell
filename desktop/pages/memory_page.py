@@ -4,9 +4,9 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
-    QMessageBox, QFrame, QHeaderView,
+    QMessageBox, QFrame, QHeaderView, QCheckBox, QTimeEdit,
 )
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QTime
 from PySide6.QtGui import QFont
 
 from desktop import services
@@ -48,14 +48,46 @@ class MemoryPage(QWidget):
 
         # ---------- 提炼 ----------
         con_box = QGroupBox("提炼")
-        col = QHBoxLayout(con_box)
+        cv = QVBoxLayout(con_box)
+
+        r0 = QHBoxLayout()
         self.btn_consolidate = QPushButton("提炼情景记忆 → 语义事实")
         self.btn_consolidate.clicked.connect(self.do_consolidate)
-        col.addWidget(self.btn_consolidate)
+        r0.addWidget(self.btn_consolidate)
         self.lab_con = QLabel("将未提炼的情景记忆交给模型，提取稳定事实存入语义库。")
         self.lab_con.setStyleSheet("color: #888; font-size: 12px;")
-        col.addWidget(self.lab_con)
-        col.addStretch()
+        r0.addWidget(self.lab_con)
+        r0.addStretch()
+        cv.addLayout(r0)
+
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("提炼模型"))
+        self.cb_ex_model = QComboBox()
+        self.cb_ex_model.setMinimumWidth(210)
+        self.cb_ex_model.setToolTip(
+            "语义提炼需要生成模型；bge-m3 是嵌入模型，只能做向量检索，无法提炼")
+        r1.addWidget(self.cb_ex_model)
+
+        self.chk_auto = QCheckBox("自动提炼")
+        self.chk_auto.stateChanged.connect(lambda _=0: self._update_sched_label())
+        r1.addWidget(self.chk_auto)
+
+        self.ed_time = QTimeEdit()
+        self.ed_time.setDisplayFormat("HH:mm")
+        self.ed_time.setTime(QTime(23, 0))
+        self.ed_time.timeChanged.connect(lambda _=None: self._update_sched_label())
+        r1.addWidget(self.ed_time)
+
+        btn_save = QPushButton("保存设置")
+        btn_save.clicked.connect(self.save_schedule)
+        r1.addWidget(btn_save)
+
+        self.lab_sched = QLabel("")
+        self.lab_sched.setStyleSheet("color: #888; font-size: 12px;")
+        r1.addWidget(self.lab_sched)
+        r1.addStretch()
+        cv.addLayout(r1)
+
         layout.addWidget(con_box)
 
         self._clear_count = 0
@@ -140,6 +172,7 @@ class MemoryPage(QWidget):
         self.refresh_stats()
         self.reload_sessions()
         self.load_page(1)
+        self.load_schedule()
 
     # ---------- 统计 ----------
 
@@ -316,6 +349,62 @@ class MemoryPage(QWidget):
             % (r.get("processed", 0), r.get("facts_new", 0), r.get("facts_merged", 0)))
         self.refresh_stats()
         self.load_page(1)
+
+    # ---------- 自动提炼设置 ----------
+
+    def load_schedule(self):
+        run_async(self, services.get_memory_schedule, self._on_schedule)
+
+    def _on_schedule(self, s):
+        if s.get("error"):
+            self.lab_sched.setText("读取设置失败")
+            return
+        cur_model = s.get("model") or ""
+        self.chk_auto.setChecked(bool(s.get("auto")))
+        try:
+            hh, mm = str(s.get("time") or "23:00").split(":")
+            self.ed_time.setTime(QTime(int(hh), int(mm)))
+        except Exception:
+            self.ed_time.setTime(QTime(23, 0))
+        self._update_sched_label()
+        run_async(self, services.list_ollama_models,
+                  lambda models: self._on_models(models, cur_model))
+
+    def _on_models(self, models, cur):
+        self.cb_ex_model.blockSignals(True)
+        self.cb_ex_model.clear()
+        self.cb_ex_model.addItem("跟随当前对话模型", "")
+        for m in models or []:
+            self.cb_ex_model.addItem(m, m)
+        idx = self.cb_ex_model.findData(cur)
+        if cur and idx < 0:
+            self.cb_ex_model.addItem(cur + "（当前设置）", cur)
+            idx = self.cb_ex_model.count() - 1
+        self.cb_ex_model.setCurrentIndex(idx if idx >= 0 else 0)
+        self.cb_ex_model.blockSignals(False)
+
+    def save_schedule(self):
+        t = self.ed_time.time().toString("HH:mm")
+        model = self.cb_ex_model.currentData() or ""
+        run_async(self, services.save_memory_schedule, self._on_saved,
+                  self.chk_auto.isChecked(), t, model, 50)
+
+    def _on_saved(self, r):
+        if r.get("ok"):
+            self.lab_sched.setText("已保存")
+            QMessageBox.information(self, "已保存", r.get("message", "设置已保存"))
+        else:
+            QMessageBox.warning(self, "保存失败", r.get("message", "未知错误"))
+
+    def _update_sched_label(self):
+        if not hasattr(self, "lab_sched"):
+            return
+        if self.chk_auto.isChecked():
+            self.lab_sched.setText(
+                "每天 %s 自动提炼（需 QQ 服务运行）"
+                % self.ed_time.time().toString("HH:mm"))
+        else:
+            self.lab_sched.setText("自动提炼已关闭")
 
     def _on_memories(self, r):
         self.table.clearSpans()

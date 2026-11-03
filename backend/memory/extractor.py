@@ -39,11 +39,38 @@ class Extractor:
         """
         provider_call: 可注入的模型调用函数，签名为 f(messages) -> str。
         默认用 backend.llm.provider.chat。
+        提炼可单独指定模型（memory.extractor_model）；留空则跟随当前对话模型。
         """
         if provider_call is None:
             from backend.llm import provider
             provider_call = provider.chat
         self.call = provider_call
+        self.model = self._resolve_model()
+
+    @staticmethod
+    def _resolve_model() -> str:
+        """提炼模型：runtime 优先，其次部署配置；空串表示跟随主模型"""
+        try:
+            from backend.runtime_config import get_runtime
+            m = (get_runtime().get("memory.extractor_model") or "").strip()
+            if m:
+                return m
+        except Exception:
+            pass
+        try:
+            from backend.config_loader import get
+            return (get("memory.extractor_model", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _call_model(self, messages: list) -> str:
+        """调用模型；带模型覆盖，且兼容不接受该参数的注入实现"""
+        if not self.model:
+            return self.call(messages)
+        try:
+            return self.call(messages, model_override=self.model)
+        except TypeError:
+            return self.call(messages)
 
     def build_messages(self, events: list, speaker_name: str = "",
                        owner_id: str = "") -> tuple:
@@ -70,7 +97,7 @@ class Extractor:
         messages, who = self.build_messages(events, speaker_name, owner_id)
 
         # 模型调用失败 → 抛异常
-        raw = self.call(messages)
+        raw = self._call_model(messages)
 
         # 解析失败 → 抛异常（不静默返回空）
         facts = self._parse(raw, who)
