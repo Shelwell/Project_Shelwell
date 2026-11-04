@@ -96,7 +96,8 @@ class Orchestrator:
         bubbles = split_bubbles(
             reply,
             limit=get("reply.max_chars_per_bubble", 40),
-            max_bubbles=get("reply.max_bubbles", 3),
+            max_bubbles=get("reply.max_bubbles", 2),
+            single_max=get("reply.single_bubble_max_chars", 45),
         )
         if not bubbles:
             return {"reply": "", "ok": False, "error": "empty_reply"}

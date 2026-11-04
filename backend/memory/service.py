@@ -296,16 +296,18 @@ class MemoryService:
 
     # ============ 群聊上下文 ============
 
-    def get_group_context(self, channel_id: str, limit: int = 15) -> list:
+    def get_group_context(self, channel_id: str, limit: int = 10) -> list:
         """
-        拉取某群最近 N 条消息，用于被触发时补充上下文。
-        返回 [{"speaker": 昵称或QQ号, "text": 内容, "time": 时间}, ...]（旧→新）
+        拉取某群最近 N 轮消息，用于被触发时补充上下文。
+        返回 [{"speaker": 昵称, "speaker_id": QQ, "text": 内容, "time": 时间, "is_bot": bool}, ...]
+        speaker 用昵称而非 QQ 号——模型需要知道"谁在说话"才能理解对话逻辑
         """
         events = self.archive.list_recent_by_channel(channel_id, limit=limit)
         out = []
         for ev in events:
             out.append({
-                "speaker": ev.speaker_id,
+                "speaker": ev.speaker_name or ev.speaker_id,
+                "speaker_id": ev.speaker_id,
                 "text": ev.user_msg,
                 "time": ev.timestamp,
                 "is_bot": False,
@@ -314,6 +316,7 @@ class MemoryService:
             if ev.ai_msg:
                 out.append({
                     "speaker": "Shelwell",
+                    "speaker_id": "bot",
                     "text": ev.ai_msg,
                     "time": ev.timestamp,
                     "is_bot": True,

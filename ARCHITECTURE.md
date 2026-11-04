@@ -254,8 +254,8 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `generation.temperature` / `num_predict` / `num_ctx` / `think` | 推理参数 |
 | `context.max_length` / `memory_enabled` | 上下文 |
 | `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索 |
-| `reply.max_chars_per_bubble` / `max_bubbles` | 回复气泡拆分（代码负责格式） |
-| `qq_bot.shadow.*` | 群聊接话影子模式：开关、日志路径、阈值、活跃/静默时段、冷却、称呼别名 |
+| `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` | 回复气泡拆分（代码负责格式；短回复强制合并成一条） |
+| `qq_bot.group_gate.*` | 群聊接话门禁：`mode`（active 正式决策 / shadow 只记录）、阈值、活跃/静默时段、冷却、称呼别名 |
 | `ui.*` | 界面 |
 
 `config/runtime.yaml`（运行期可变，控制台读写，与上面部署期配置分离）：

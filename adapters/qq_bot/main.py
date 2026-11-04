@@ -20,7 +20,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from backend.orchestrator import Orchestrator
 from engagement import EngagementTracker
-from shadow import ShadowRecorder
+from gate import GateRunner
 from backend.config_loader import get
 
 logging.basicConfig(level=logging.INFO, format="[QQ] %(asctime)s %(message)s")
@@ -42,16 +42,18 @@ class QQBot:
         self.trigger_keywords = get("qq_bot.trigger_keywords", []) or []
         # 自动接话热度状态机
         self.engagement = EngagementTracker(get("qq_bot.auto_engage", {}) or {})
-        # 影子模式：只记录新策略的接话决策，不改变实际发送行为
-        self.shadow = None
+        # 群聊接话门禁：active=正式决策；shadow=只记录
+        self.gate = None
         self.bot_name = ""
         try:
-            _sh_cfg = get("qq_bot.shadow", {}) or {}
-            if _sh_cfg.get("enabled"):
-                self.shadow = ShadowRecorder(_sh_cfg, str(_PROJECT_ROOT))
-                log.info("影子模式已启用 -> %s", self.shadow.log_path)
+            _gate_cfg = (get("qq_bot.group_gate", {})
+                         or get("qq_bot.shadow", {}) or {})   # 兼容旧配置名
+            if _gate_cfg:
+                self.gate = GateRunner(_gate_cfg, str(_PROJECT_ROOT))
+                log.info("接话门禁已启用: mode=%s -> %s",
+                         self.gate.mode, self.gate.log_path)
         except Exception as e:
-            log.warning("影子模式初始化失败: %s", e)
+            log.warning("接话门禁初始化失败，回退旧策略: %s", e)
         # 消息缓存：message_id -> {sender, text, time}，用于引用回复
         self.message_cache = OrderedDict()
         self.cache_max = 100
@@ -141,32 +143,43 @@ class QQBot:
             legacy_engage = at_me or self.engagement.should_engage(
                 group_id, is_at_me=at_me)
 
-            # 影子模式：记录新策略的决策，不改变下面的实际行为
-            if self.shadow is not None:
+            # 旧策略结果（热度）：只用于模型驻留建议和对照日志
+            legacy_engage = at_me or self.engagement.should_engage(
+                group_id, is_at_me=at_me)
+
+            # 新策略：门禁决策（active 时直接生效）
+            engage = legacy_engage
+            if self.gate is not None:
                 try:
                     reply_id = self.extract_reply(evt.get("message"))
                     quoted_sender = ""
                     if reply_id and reply_id in self.message_cache:
                         quoted_sender = self.message_cache[reply_id].get("sender", "")
-                    rec = self.shadow.observe(
+                    rec = self.gate.decide(
                         group_id=group_id, sender_id=user_id,
                         sender_name=self._sender_name(evt), text=text,
                         ts=float(evt.get("time") or 0) or None,
-                        at_me=self._is_at_me_explicit(evt), at_other=self._is_at_other(evt),
+                        at_me=self._is_at_me_explicit(evt),
+                        at_other=self._is_at_other(evt),
                         is_question=is_q, reply_to_id=reply_id or "",
                         reply_to_sender=quoted_sender, bot_name=self.bot_name,
                         legacy_engage=legacy_engage,
                         msg_id=str(evt.get("message_id") or ""))
                     d = (rec or {}).get("decision", {})
-                    log.info("[Shadow] %s reason=%s score=%.2f legacy=%s | %s",
+                    log.info("[Gate:%s] %s reason=%s score=%.2f | %s",
+                             self.gate.mode,
                              "接" if d.get("respond") else "不接",
-                             d.get("reason", "?"), d.get("score", 0.0),
-                             legacy_engage, text[:30])
+                             d.get("reason", "?"), d.get("score", 0.0), text[:30])
+                    if self.gate.enforce:
+                        engage = bool(d.get("respond"))
+                        if engage != legacy_engage:
+                            log.info("[Gate] 与旧策略不同: gate=%s legacy=%s",
+                                     engage, legacy_engage)
                 except Exception as e:
-                    log.warning("影子模式记录失败: %s", e)
+                    log.warning("接话门禁异常，回退旧策略: %s", e)
+                    engage = legacy_engage
 
-            # 判断是否该接话（沿用现有策略，影子模式不改变它）
-            if legacy_engage:
+            if engage:
                 need_engage = True
                 log.info("接话 [群%s] heat=%.1f at_me=%s", group_id, heat, at_me)
             else:
@@ -216,12 +229,12 @@ class QQBot:
         else:
             final_reply_to = None
         await self.send_reply(evt, reply, reply_to=final_reply_to, at_user=None)
-        # 影子模式：记录她自己说了什么（供"回复我"/话题连续性判定）
-        if msg_type == "group" and self.shadow is not None:
+        # 记录她自己说了什么（供"回复我"/话题连续性判定）
+        if msg_type == "group" and self.gate is not None:
             try:
-                self.shadow.on_bot_spoke(group_id, reply)
+                self.gate.on_bot_spoke(group_id, reply)
             except Exception as e:
-                log.warning("影子模式记录发言失败: %s", e)
+                log.warning("门禁记录发言失败: %s", e)
         # 接话后热度减半 + 进入冷却
         if msg_type == "group" and need_engage:
             self.engagement.on_engaged(group_id)

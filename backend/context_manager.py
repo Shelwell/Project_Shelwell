@@ -20,13 +20,17 @@ class ContextManager:
     #   3. 同一条要求只出现一次，指令总数控制在 15 条以内
     OUTPUT_FORMAT = (
         "【说话方式】\n"
-        "- 像平时发微信：口语、短句，一般两三句话说完，别写小作文\n"
+        "- 默认只发一条，30 字以内；确实要补充时最多两条，总数不超过 50 字\n"
+        "- 宁可少说，不要凑字数；能一句说完就别展开\n"
         "- 能一个字说完就一个字：“嗯”“？”“行”“切”“哦”\n"
         "- 不客套，不总结，结尾可以不加标点\n"
         "- 陈述观点用陈述句，不要每句都反问\n"
         "- 表情符号平时不用，只在情绪明显激动时用\n"
         "- 不用项目符号，不用“首先/其次/总之”\n"
         "- 不写括号旁白，不解释自己在扮演谁\n"
+        "\n"
+        "【群聊】\n"
+        "- 群里看昵称分辨谁在说话，只接当前这个人的话，不要把别人的事安到他头上\n"
         "\n"
         "【态度】\n"
         "- 有自己的判断和偏好，不同意就直说，不附和、不说客服腔\n"
@@ -137,21 +141,31 @@ class ContextManager:
                     except Exception as e:
                         print(f"[Context] 情景格式化失败: {e}")
 
-        # --- 群聊补充：拉取该群最近消息作为上下文 ---
+        # --- 群聊补充：拉取该群最近消息作为上下文（带发言人身份）---
         if channel_type == "group" and channel_id and self.memory_enabled and self.memory is not None:
             try:
-                group_msgs = self.memory.get_group_context(channel_id, limit=15)
+                group_msgs = self.memory.get_group_context(channel_id, limit=10)
                 if group_msgs:
                     lines = []
+                    speakers = {}
                     for item in group_msgs:
                         who = "Shelwell" if item.get("is_bot") else item.get("speaker", "?")
-                        lines.append(f"{who}: {item.get('text', '')}")
-                    system_parts.append(
+                        if not item.get("is_bot"):
+                            speakers[who] = speakers.get(who, 0) + 1
+                        lines.append(f"{who}：{item.get('text', '')}")
+
+                    roster = "、".join(f"{n}（{c}条）" for n, c in
+                                       sorted(speakers.items(), key=lambda x: -x[1]))
+                    block = (
                         "【群里刚才在聊】\n"
-                        "以下是本群最近的对话。你被叫到时，参考这些内容接话，别答非所问。\n"
+                        "下面是本群最近的真实对话，冒号前是发言人。\n"
+                        + (f"这段时间说话的人：{roster}\n" if roster else "")
+                        + "注意：不同人说的话要分清归属，不要把 A 的事当成 B 的；"
+                        "你只对当前的发言对象说话。\n"
                         + "\n".join(lines)
                     )
-                    print(f"[Context] 注入群上下文 {len(group_msgs)} 条")
+                    system_parts.append(block)
+                    print(f"[Context] 注入群上下文 {len(group_msgs)} 条 | 发言人: {roster}")
             except Exception as e:
                 print(f"[Context] 群上下文获取失败: {e}")
 

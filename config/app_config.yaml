@@ -20,8 +20,9 @@ memory:
   min_similarity: 0.35
   collection_name: shelwell_memory
 reply:
-  max_chars_per_bubble: 40   # 单个气泡字符上限；超长回复按标点再切分
-  max_bubbles: 3             # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
+  max_chars_per_bubble: 40      # 单个气泡字符上限；超长回复按标点再切分
+  max_bubbles: 2                # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
+  single_bubble_max_chars: 45   # 整条回复不超过这个字数时，强制合并成一条（多数对话应是单条）
 ui:
   page_title: Shelwell
   page_icon: 💬
@@ -48,12 +49,13 @@ qq_bot:
     conversation_window_minutes: 3
     half_life_minutes: 60
     heat_reply_to_me: 0.3
-  # 影子模式：只记录"新策略会不会接话"，不发送、不影响现有行为
-  shadow:
-    enabled: true
-    log_path: logs/group_shadow.jsonl
-    threshold: 0.55              # 参与意愿分达到多少才考虑接话
-    active_hours: ["19:00-24:00"]  # 群活跃时段（该时段内门槛自然更高，避免打断热聊）
+  # 群聊接话门禁：active=用新策略决策；shadow=只记录不执行
+  # 影子数据已验证过，当前为正式决策
+  group_gate:
+    mode: active                  # active / shadow
+    log_path: logs/group_gate.jsonl
+    threshold: 0.55               # 参与意愿分达到多少才考虑接话
+    active_hours: ["19:00-24:00"]  # 群活跃时段
     quiet_hours: ["00:30-09:00"]   # 静默时段：除非 @ 我，否则不说话
     cooldown_seconds: 90
     rapid_window_seconds: 30
