@@ -19,6 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from backend.orchestrator import Orchestrator
+from backend.vision import VisionPipeline
 from engagement import EngagementTracker
 from gate import GateRunner
 from backend.config_loader import get
@@ -54,6 +55,17 @@ class QQBot:
                          self.gate.mode, self.gate.log_path)
         except Exception as e:
             log.warning("接话门禁初始化失败，回退旧策略: %s", e)
+
+        # 视觉：直连主模型识别小图（QQ 表情包），按指纹缓存去重
+        self.vision = None
+        try:
+            _vcfg = get("vision", {}) or {}
+            if _vcfg.get("enabled", True):
+                self.vision = VisionPipeline(_vcfg, project_root=str(_PROJECT_ROOT))
+                log.info("视觉识别已启用: 最大边长=%s 缓存=%s",
+                         self.vision.max_side, self.vision.cache.stats())
+        except Exception as e:
+            log.warning("视觉模块初始化失败（图片将只记录占位）: %s", e)
         # 消息缓存：message_id -> {sender, text, time}，用于引用回复
         self.message_cache = OrderedDict()
         self.cache_max = 100
@@ -118,8 +130,10 @@ class QQBot:
         if evt.get("user_id") == evt.get("self_id"):
             return
 
-        text = self.extract_text(evt.get("message"))
-        if not text:
+        message = evt.get("message")
+        text = self.extract_text(message)
+        image_segs = self.extract_images(message)
+        if not text and not image_segs:
             return
 
         # 先缓存这条消息，供后续引用
@@ -128,6 +142,7 @@ class QQBot:
         msg_type = evt.get("message_type")
         user_id = str(evt.get("user_id", ""))
         group_id = str(evt.get("group_id", "")) if msg_type == "group" else user_id
+        image_payloads, image_notes = [], []
 
         # 群聊：先归档（全量存储），再判断是否回复
         need_engage = False
@@ -140,10 +155,6 @@ class QQBot:
             # 观察这条消息，更新热度
             heat = self.engagement.observe(group_id, user_id, text,
                                            is_at_me=at_me, is_question=is_q)
-            legacy_engage = at_me or self.engagement.should_engage(
-                group_id, is_at_me=at_me)
-
-            # 旧策略结果（热度）：只用于模型驻留建议和对照日志
             legacy_engage = at_me or self.engagement.should_engage(
                 group_id, is_at_me=at_me)
 
@@ -182,10 +193,17 @@ class QQBot:
             if engage:
                 need_engage = True
                 log.info("接话 [群%s] heat=%.1f at_me=%s", group_id, heat, at_me)
+                # 要回复：图片直接随本条消息送进模型（不预先识别，省一次推理）
+                image_payloads, image_notes = await self._prepare_images(
+                    image_segs, describe_missing=False)
             else:
-                # 不接：只归档
-                self.archive_only(evt, text)
+                # 不接：后台归档（图片识别较慢，不能阻塞后续消息处理）
+                self._spawn_archive(evt, text, image_segs)
                 return
+        else:
+            # 私聊：图片随消息送模型
+            image_payloads, image_notes = await self._prepare_images(
+                image_segs, describe_missing=False)
 
         session_id = self.session_id(evt)
 
@@ -217,10 +235,16 @@ class QQBot:
                 except Exception as e:
                     log.warning("拉取引用消息失败: %s", e)
 
-        log.info("收到 [%s] %s", session_id, text)
+        user_text = text
+        if image_notes:
+            user_text = (text + " " + " ".join(image_notes)).strip()
 
-        reply = await self.think(session_id, text, user_id, msg_type, group_id, evt,
-                                 quoted=quoted)
+        log.info("收到 [%s] %s%s", session_id, user_text[:80],
+                 f"（图 {len(image_payloads)} 张）" if image_payloads else "")
+
+        reply = await self.think(session_id, user_text, user_id, msg_type, group_id,
+                                 evt, quoted=quoted,
+                                 images=[p["b64"] for p in image_payloads])
         # 群聊被动回复：引用用户触发的那条消息本身，不 @ 人
         # （@ 仅用于后续主动找人的功能）
         if msg_type == "group":
@@ -279,6 +303,62 @@ class QQBot:
             parts = [seg.get("data", {}).get("text", "") for seg in message if seg.get("type") == "text"]
             return "".join(parts).strip()
         return ""
+
+    def extract_images(self, message):
+        """取出图片段（QQ 表情包也是 image 段；face 小黄脸没有图，忽略）"""
+        if not isinstance(message, list):
+            return []
+        return [seg.get("data") or {} for seg in message if seg.get("type") == "image"]
+
+    async def _prepare_images(self, segs, describe_missing=False):
+        """
+        处理本条消息里的图片：
+          取字节 → 指纹/尺寸校验 → 缓存命中直接用 → 未命中且需要时才调视觉模型
+        返回 (payloads, notes)
+          payloads: [{"b64","fingerprint","desc"}]  送给模型
+          notes:    ["[表情包：描述]" ...]          进历史/记忆的文字占位
+        """
+        payloads, notes = [], []
+        if not segs:
+            return payloads, notes
+        if self.vision is None or not self.vision.enabled:
+            return payloads, ["[图片]"] * len(segs)
+
+        loop = asyncio.get_event_loop()
+        for seg in segs[:max(1, self.vision.max_images)]:
+            try:
+                raw = await loop.run_in_executor(None, self.vision.load_bytes, seg)
+                if not raw:
+                    notes.append("[图片]")
+                    continue
+                info = await loop.run_in_executor(None, self.vision.inspect, raw)
+                if not info.get("ok"):
+                    w, h = info.get("width"), info.get("height")
+                    if info.get("reason") == "too_large" and w:
+                        notes.append(f"[图片 {w}x{h}，太大未识别]")
+                        log.info("图片跳过：%sx%s 超过 %s", w, h, self.vision.max_side)
+                    else:
+                        notes.append("[图片]")
+                    continue
+
+                desc = self.vision.cached_description(info["fingerprint"])
+                if not desc and describe_missing:
+                    res = await loop.run_in_executor(None, self.vision.describe, raw)
+                    if res.get("ok"):
+                        desc = res.get("description") or ""
+                        log.info("视觉识别%s: %s",
+                                 "（缓存）" if res.get("cached") else "", desc[:40])
+                    else:
+                        log.info("视觉识别跳过: %s", res.get("reason"))
+
+                payloads.append({"b64": info["b64"],
+                                 "fingerprint": info["fingerprint"],
+                                 "desc": desc})
+                notes.append(f"[表情包：{desc}]" if desc else "[表情包]")
+            except Exception as e:
+                log.warning("图片处理失败: %s", e)
+                notes.append("[图片]")
+        return payloads, notes
 
     def _sender_name(self, evt):
         """发言人显示名：群名片 > 昵称 > QQ 号"""
@@ -346,20 +426,42 @@ class QQBot:
         """兼容旧调用：等价于 is_at_me"""
         return self.is_at_me(evt, text)
 
-    def archive_only(self, evt, text):
-        """未触发的群消息：只归档不回复"""
+    def _spawn_archive(self, evt, text, image_segs=None):
+        """后台归档（含图片识别），不阻塞 WS 消息处理"""
+        async def run():
+            try:
+                await self.archive_only(evt, text, image_segs)
+            except Exception as e:
+                log.warning("后台归档失败: %s", e)
+        try:
+            asyncio.get_event_loop().create_task(run())
+        except Exception as e:
+            log.warning("创建归档任务失败: %s", e)
+
+    async def archive_only(self, evt, text, image_segs=None):
+        """未触发的群消息：归档（图片先识别成文字描述再入库）"""
         user_id = str(evt.get("user_id", ""))
         group_id = str(evt.get("group_id", ""))
         sender = evt.get("sender") or {}
         speaker_name = sender.get("card") or sender.get("nickname") or user_id
         session_id = f"qqg:{group_id}:{user_id}"
+
+        notes = []
+        if image_segs:
+            # 未触发回复：仍然识别图片，把描述写进记忆（命中缓存则不重复调用）
+            _, notes = await self._prepare_images(image_segs, describe_missing=True)
+        user_text = (text + " " + " ".join(notes)).strip() if notes else text
+        if not user_text:
+            return
         try:
             self.orchestrator.context.archive_turn(
-                user_msg=text, ai_msg="",
+                user_msg=user_text, ai_msg="",
                 session_id=session_id,
                 speaker_id=user_id, channel_type="group", channel_id=group_id,
                 speaker_name=speaker_name,
             )
+            if notes:
+                log.info("图片已识别入库: %s", " ".join(notes)[:60])
         except Exception as e:
             log.warning("群消息归档失败: %s", e)
 
@@ -369,10 +471,15 @@ class QQBot:
         return f"qqg:{evt['group_id']}:{evt['user_id']}"
 
     async def think(self, session_id, text, speaker_id="", channel_type="private",
-                    channel_id="", evt=None, quoted=None):
+                    channel_id="", evt=None, quoted=None, images=None):
         history = self.sessions.setdefault(session_id, [])
         # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
         history.append({"role": "user", "content": text})
+        # 本轮要送模型的 messages：图片只挂在这一条上，不进历史
+        msgs = list(history)
+        if images:
+            msgs[-1] = dict(msgs[-1])
+            msgs[-1]["images"] = images
 
         # 构造"谁在说话"的上下文说明，并取出昵称供记忆归属使用
         speaker_hint = ""
@@ -389,13 +496,8 @@ class QQBot:
         if quoted:
             quote_hint = f"对方引用了这条消息：{quoted['sender']} 说「{quoted['text'][:100]}」"
 
-        # 热度驱动的模型驻留策略：群聊按热度决定，私聊走配置默认
+        # 模型常驻由配置 generation.keep_alive 控制（不要冷加载），这里不再按热度卸载
         keep_alive = None
-        if channel_type == "group" and channel_id:
-            try:
-                keep_alive = self.engagement.suggest_keep_alive(channel_id)
-            except Exception:
-                keep_alive = None
 
         # orchestrator 内部是同步 requests，放线程池避免阻塞事件循环
         loop = asyncio.get_event_loop()
@@ -403,7 +505,7 @@ class QQBot:
             result = await loop.run_in_executor(
                 None,
                 lambda: self.orchestrator.chat(
-                    list(history), session_id=session_id, current_query=text,
+                    msgs, session_id=session_id, current_query=text,
                     speaker_id=speaker_id, channel_type=channel_type,
                     channel_id=channel_id, speaker_name=speaker_name,
                     speaker_hint=speaker_hint, quote_hint=quote_hint,

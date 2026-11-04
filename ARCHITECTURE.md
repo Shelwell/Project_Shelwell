@@ -135,7 +135,7 @@ E:\Shelwell\
 | 记忆系统 | `backend/memory/` | 情景+语义双层记忆、双索引、巩固、遗忘 | 已有 |
 | 知识库 | `backend/knowledge_base.py` | 外部知识 RAG（游戏/动漫/本地生活） | 规划 |
 | 人格引擎 | `backend/persona_engine.py` | 读取 persona/facts yaml，生成人格上下文 | 已有 |
-| 视觉管道 | `backend/vision_pipeline.py`（待建） | 图片→文字描述，喂给文本模型 | 规划 |
+| 视觉管道 | `backend/vision.py` | 图片/表情包识别：直连主模型、指纹缓存去重、≤512 小图护栏 | 已有 |
 | 表情包管理 | `backend/sticker_manager.py`（待建） | 图库入库、打标、按情绪选图 | 规划 |
 | 场景系统 | `backend/scenario_manager.py`（待建） | 场景配置注入，动态调整语气 | 规划 |
 | 群聊接话决策 | `backend/group_policy.py` | @/回复我/热聊/静默/兴趣计分，决定"该不该接话" | 已有（影子模式） |
@@ -255,6 +255,7 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `context.max_length` / `memory_enabled` | 上下文 |
 | `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索 |
 | `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` | 回复气泡拆分（代码负责格式；短回复强制合并成一条） |
+| `vision.enabled` / `model` / `max_side` / `max_bytes` / `max_images` / `max_per_minute` / `cache_path` | 图片识别：直连主模型、≤512 小图、指纹缓存、频率上限 |
 | `qq_bot.group_gate.*` | 群聊接话门禁：`mode`（active 正式决策 / shadow 只记录）、阈值、活跃/静默时段、冷却、称呼别名 |
 | `ui.*` | 界面 |
 

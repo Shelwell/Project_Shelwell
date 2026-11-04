@@ -9,9 +9,9 @@ ollama:
 generation:
   temperature: 0.7
   num_predict: 1024
-  num_ctx: 8192
+  num_ctx: 32768
   think: false
-  keep_alive: "10m"         # 模型驻留时长：私聊每条消息刷新倒计时，10分钟无消息后卸载
+  keep_alive: "4h"          # 模型常驻：避免冷加载（27B 冷启约 50 秒）
 context:
   max_length: 30
   memory_enabled: true
@@ -23,6 +23,14 @@ reply:
   max_chars_per_bubble: 40      # 单个气泡字符上限；超长回复按标点再切分
   max_bubbles: 2                # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
   single_bubble_max_chars: 45   # 整条回复不超过这个字数时，强制合并成一条（多数对话应是单条）
+vision:
+  enabled: true
+  model: ''                     # 空=跟随当前对话模型（直连 27B，不另起模型避免冷加载）
+  max_side: 512                 # 只处理小图（QQ 表情包）；最长边超过就直接跳过，不缩放
+  max_bytes: 2097152            # 原始文件上限 2MB
+  max_images: 2                 # 单条消息最多处理几张图
+  max_per_minute: 10            # 视觉调用频率上限，防止群刷图拖垮对话
+  cache_path: memory/index/vision_cache.sqlite3   # 图片指纹 → 描述 缓存
 ui:
   page_title: Shelwell
   page_icon: 💬
