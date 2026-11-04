@@ -861,6 +861,62 @@ def list_episodic_sessions() -> list:
         return []
 
 
+# ---------- 关系等级 ----------
+
+def list_relationships() -> dict:
+    """列出所有发言人的关系等级（首次调用会从归档回填）"""
+    try:
+        from backend.relationship import RelationshipStore
+        from backend.memory.archive import Archive
+        store = RelationshipStore()
+        store.ensure_backfill(Archive())
+        items = [rel.to_dict() for rel in store.all()]
+        return {
+            "ok": True,
+            "items": items,
+            "dependent_id": store.dependent_id(),
+            "stats": store.stats(),
+            "thresholds": dict(store.thresholds),
+        }
+    except Exception as e:
+        return {"ok": False, "items": [], "error": str(e)}
+
+
+def set_relationship_dependent(speaker_id: str, name: str = "") -> dict:
+    """设置唯一可达“依赖”的对象；传空字符串表示取消"""
+    try:
+        sid = str(speaker_id or "").strip()
+        get_runtime().update({"relationship": {
+            "dependent_id": sid,
+            "dependent_name": str(name or "").strip(),
+        }})
+        if sid:
+            return {"ok": True, "message": "已将 %s 设为依赖对象" % (name or sid)}
+        return {"ok": True, "message": "已取消依赖对象"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+def clear_relationship(speaker_id: str) -> dict:
+    """清除某人的关系记录（下次说话从陌生重新累计）"""
+    try:
+        from backend.relationship import RelationshipStore
+        ok = RelationshipStore().delete(speaker_id)
+        return {"ok": ok, "message": "已清除" if ok else "记录不存在"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+def clear_relationships() -> dict:
+    """清空全部关系记录"""
+    try:
+        from backend.relationship import RelationshipStore
+        n = RelationshipStore().clear_all()
+        return {"ok": True, "message": "已清除 %d 条关系记录" % n}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
 def clear_all_memory() -> str:
     """
     彻底清空全部记忆：语义事实、情景归档、向量索引、FTS 关键词索引、任务表。
@@ -952,6 +1008,14 @@ def clear_all_memory() -> str:
             log("任务表: 文件不存在，跳过")
     except Exception as e:
         log("任务表清理失败: %s" % e)
+
+    # 6. 关系等级：由聊天记录派生，一并清空（依赖对象设置保留）
+    try:
+        from backend.relationship import RelationshipStore
+        n = RelationshipStore().clear_all()
+        log("关系: 清除 %d 位发言人的等级记录" % n)
+    except Exception as e:
+        log("关系清理失败: %s" % e)
 
     log("")
     log("清空完成")

@@ -92,6 +92,19 @@ class PersonaEngine:
             for r in cw:
                 out.append("- " + str(r))
 
+        # ---- 社交分寸（五级；等级由代码判定，傲娇是特权）----
+        sm = d.get("social_modes") or {}
+        if sm:
+            labels = {"stranger": "陌生", "acquaintance": "认识",
+                      "known": "了解", "trust": "信任", "dependent": "依赖"}
+            out.append("【社交分寸（等级由系统判定，见每轮【关系】段）】")
+            for rule in (sm.get("rules") or []):
+                out.append("- " + str(rule))
+            for key in ("stranger", "acquaintance", "known", "trust", "dependent"):
+                items = [str(x) for x in (sm.get(key) or [])]
+                if items:
+                    out.append(f"- {labels.get(key, key)}：" + "；".join(items))
+
         # ---- 性格 ----
         p = d.get("personality", {})
         traits = p.get("core_traits") or []

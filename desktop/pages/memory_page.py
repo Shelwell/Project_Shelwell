@@ -40,7 +40,7 @@ class MemoryPage(QWidget):
             "QPushButton{background:#888;color:white;border-radius:4px;padding:4px 12px;}")
         self.btn_clear.clicked.connect(self.on_clear_clicked)
         cl.addWidget(self.btn_clear)
-        warn = QLabel("三次点击确认后删除全部归档、向量和关键词索引，不可恢复。")
+        warn = QLabel("三次点击确认后删除全部归档、向量、关键词索引与关系等级，不可恢复。")
         warn.setStyleSheet("color: #b33; font-size: 12px;")
         cl.addWidget(warn)
         cl.addStretch()

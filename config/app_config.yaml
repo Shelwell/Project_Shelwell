@@ -25,6 +25,23 @@ knowledge:
   top_k: 2                      # 单轮最多注入几条世界档案
   min_similarity: 0.55          # 低于此相似度宁可不注入，避免无关设定
   path: config/persona_prompts/shelwell_knowledge.jsonl
+
+# 关系等级：由代码按「聊天条数 + 认识时长」判定，模型不得自行升降
+# 前三级满足任一维度即可；信任/依赖要求两个维度同时达标
+relationship:
+  enabled: true
+  db_path: memory/index/relationships.sqlite3
+  thresholds:
+    stranger_max_msgs: 50       # ≤50 条 → 陌生
+    stranger_max_hours: 120     # ≤120 小时（5 天）→ 陌生
+    acquaint_max_msgs: 300      # 51-300 条 → 认识
+    acquaint_max_hours: 360     # 121-360 小时（15 天）→ 认识
+    known_max_msgs: 1000        # 301-1000 条 → 了解
+    known_max_hours: 1080       # 361-1080 小时（45 天）→ 了解
+    trust_min_msgs: 1000        # >1000 条且 >1080 小时 → 信任
+    trust_min_hours: 1080
+    depend_min_msgs: 3000       # >3000 条且 >90 天且被指定 → 依赖
+    depend_min_hours: 2160
 reply:
   max_chars_per_bubble: 40      # 单个气泡字符上限；超长回复按标点再切分
   max_bubbles: 2                # 单轮最多气泡数；超出部分并入最后一条（不丢内容）

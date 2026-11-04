@@ -39,6 +39,11 @@ class MemoryRetriever:
 
     # ============ 对外接口 ============
 
+    @property
+    def relationship(self):
+        """关系等级存储（由 MemoryService 持有，随归档消息自动累加）"""
+        return getattr(self._svc, "relationship", None)
+
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    speaker_id: str = "", channel_type: str = "",
                    channel_id: str = "", speaker_name: str = ""):

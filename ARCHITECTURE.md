@@ -28,6 +28,7 @@ E:\Shelwell\
 │   ├── context_manager.py    # 上下文构建（语义优先，情景回退）
 │   ├── memory_retriever.py   # 记忆兼容层
 │   ├── persona_engine.py     # 人格编译（persona + facts）
+│   ├── relationship.py       # 关系等级（5 级，代码判定）
 │   ├── orchestrator.py       # L4 编排
 │   ├── llm/                  # L2 模型层
 │   │   ├── provider.py       # 统一推理接口
@@ -135,6 +136,7 @@ E:\Shelwell\
 | 记忆系统 | `backend/memory/` | 情景+语义双层记忆、双索引、巩固、遗忘 | 已有 |
 | 知识库 | `backend/knowledge_base.py` | 世界设定 RAG（废铁城/旧时代），与对话记忆严格分离 | 已有 |
 | 人格引擎 | `backend/persona_engine.py` | 读取 persona/facts yaml，生成人格上下文 | 已有 |
+| 关系等级 | `backend/relationship.py` | 按聊天条数+认识时长判定 5 级（陌生/认识/了解/信任/依赖），SQLite 持久化，唯一依赖对象 | 已有 |
 | 视觉管道 | `backend/vision.py` | 图片/表情包识别：直连主模型、指纹缓存去重、≤512 小图护栏 | 已有 |
 | 表情包管理 | `backend/sticker_manager.py`（待建） | 图库入库、打标、按情绪选图 | 规划 |
 | 场景系统 | `backend/scenario_manager.py`（待建） | 场景配置注入，动态调整语气 | 规划 |
@@ -156,7 +158,7 @@ E:\Shelwell\
 | 模块 | 路径 | 职责 | 状态 |
 |---|---|---|---|
 | QQ 适配 | `adapters/qq_bot/` | NapCat OneBot 协议对接 | 已有 |
-| 管理控制台 | `desktop/` | PySide6 桌面端，人格/记忆/模型/账号/API 管理 | 已有 |
+| 管理控制台 | `desktop/` | PySide6 桌面端，人格/记忆/关系/模型/账号/API 管理 | 已有 |
 | CLI | `adapters/cli/`（待建） | 命令行测试入口 | 规划 |
 | Web UI | 已移除 | — | 已删除 |
 
@@ -168,6 +170,7 @@ E:\Shelwell\
 
 ### 一次对话（L4 视角）
 用户消息↓[视觉预处理] 若含图片 → vision_pipeline 生成描述 → 拼入文本↓[上下文构建] context_manager.prepare_context()├─ 短期：最近 N 条├─ 长期：memory_retriever.search() 检索 Top-K└─ 人格：persona_engine 注入设定↓[模型推理] ollama_client.chat() → 模型输出↓[后处理] 表情标记替换、多气泡拆分↓[归档] memory_retriever.add_memory()↓返回给接入层发送
+上下文构建同时读取 `relationship` 的等级，把【关系】段下沉到本轮 user 尾部（见 5.7）。
 ### 多用户记忆隔离
 
 - **session_id 规则**：Web UI 用固定 session；QQ 私聊用 `user_id`；QQ 群聊用 `group_id:user_id`
@@ -214,6 +217,8 @@ Shelwell 的“知识”分两层，与对话记忆完全隔离。
 |---|---|
 | 首页 | 一键启动全部服务、服务/容器/端口状态总览、日志查看、单项重启 |
 | 人格管理 | persona 切换、facts 切换、LoRA 挂载、新建/删除人格、模板示例 |
+| 记忆管理 | 情景/语义记忆查看、搜索、单条删除、清空、提炼设置 |
+| 关系 | 查看发言人 5 级关系、设置唯一“依赖”对象、清除单条记录 |
 | 模型切换 | Ollama 对话模型列表（过滤嵌入模型）、生成参数 |
 | 插件管理 | 占位，待 `docs/plugin-spec.md` |
 | QQ 账号 | NapCat WebUI 入口、Token 提取（持久化优先）、容器重启 |
@@ -241,6 +246,46 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 
 ---
 
+## 5.7 关系等级（确定性判定）
+
+**定位**：关系等级是**代码能力**，不是模型推断。模型只执行判定结果，无权升降。
+
+### 数据与计数
+
+- 实现：`backend/relationship.py`（L3），SQLite `memory/index/relationships.sqlite3`
+- 每次归档一条消息（`MemoryService.add_memory`）就 `observe()`：消息数 +1，首次出现时间取最早
+- 首次建库从 JSONL 归档回填一次（`ensure_backfill`），升级/重启不会把老朋友当陌生人
+- 关系按 `speaker_id` 跨私聊/群聊聚合；`session_id` 仍负责对话隔离
+
+### 等级规则
+
+| 等级 | 条数 | 认识时长 |
+|---|---|---|
+| 陌生 | ≤ 50 | ≤ 120 小时（5 天） |
+| 认识 | 51–300 | 121–360 小时（15 天） |
+| 了解 | 301–1000 | 361–1080 小时（45 天） |
+| 信任 | > 1000 **且** | > 1080 小时（45 天）**且** |
+| 依赖 | > 3000 **且** | > 2160 小时（90 天）**且** 被设为唯一依赖对象 |
+
+- 前三级：条数、时长各自套档，取较高档（满足任一维度即可）
+- 信任：两个维度必须同时超过阈值；只满足一边时封顶在「了解」
+- 依赖：两个维度同时达标，且 `speaker_id == runtime.relationship.dependent_id`（全局限 1 人）
+
+### 注入与开关
+
+- `ContextManager` 把 `【关系｜系统判定，勿自行升降】…` 下沉到本轮 user 尾部，system 保持字节级稳定
+- 内容：当前说话人 / 认识时长 / 聊过条数 / 等级 / 傲娇·毒舌·玩梗开关
+- 开关矩阵：私聊「信任/依赖」= 允许；群聊仅「依赖」= 允许；陌生/认识/了解一律禁止
+- 人格 yaml 的 `social_modes` 描述五级具体态度；代码只给等级与开关
+- 模型复述等级/条数视为提示词泄漏，`orchestrator` 按污染过滤
+
+### 边界
+
+- 关系等级只影响“能不能傲娇/毒舌/玩梗”，不改记忆检索、知识库、接话门禁
+- 清空全部记忆时一并清除关系记录（依赖对象设置保留）
+
+---
+
 ## 6. 配置规范
 
 `config/app_config.yaml` 现有字段：
@@ -255,6 +300,7 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `context.max_length` / `memory_enabled` | 上下文 |
 | `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索（"你与我"：私密/动态/关系） |
 | `knowledge.enabled` / `collection_name` / `top_k` / `min_similarity` / `path` | 世界档案 RAG（"世界"：公有/静态/事实），独立 collection |
+| `relationship.enabled` / `db_path` / `thresholds.*` | 关系等级：5 级阈值（条数/小时），SQLite 路径 |
 | `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` | 回复气泡拆分（代码负责格式；短回复强制合并成一条） |
 | `vision.enabled` / `model` / `max_side` / `max_bytes` / `max_images` / `max_per_minute` / `cache_path` | 图片识别：直连主模型、≤512 小图、指纹缓存、频率上限 |
 | `qq_bot.group_gate.*` | 群聊接话门禁：`mode`（active 正式决策 / shadow 只记录）、阈值、活跃/静默时段、冷却、称呼别名 |
@@ -274,6 +320,8 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `memory.auto_consolidate` | 每日自动提炼开关（bool） |
 | `memory.consolidate_time` | 自动提炼时间，本地时间 `HH:MM` |
 | `memory.consolidate_limit` | 单次自动提炼最多处理多少条情景记忆 |
+| `relationship.dependent_id` | 唯一可达“依赖”的对象（QQ 号）；空=无人，全局限 1 人 |
+| `relationship.dependent_name` | 仅用于控制台显示 |
 
 **新增配置规则**：
 - 按功能分组，不散落
@@ -411,6 +459,8 @@ system 与历史前缀保持不变，Ollama 前缀缓存才能命中（否则每
 - [x] 群聊支持：触发词、引用回复、群上下文注入、多用户归属隔离
 - [x] 提示词瘦身：OUTPUT_FORMAT 从 1100 字精简到约 500 字，清洗逻辑脚本化
 - [x] 嵌入模型升级：nomic → bge-m3（1024 维，中文语义更强）
+- [x] 关系等级：5 级确定性判定（条数+时长），SQLite 持久化，群聊/私聊权限矩阵
+- [x] 控制台“关系”页：查看等级、设置唯一依赖对象、清除记录
 
 待办：
 1. **API 预设模型名**：各家模型名已过时，需重新调研后更新 `API_PRESETS`

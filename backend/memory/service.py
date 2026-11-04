@@ -56,6 +56,8 @@ class MemoryService:
         self.archive = Archive(history_dir=archive_dir)
         self.indexer = Indexer(chroma_dir=chroma_dir, fts_db=fts_db)
         self.jobs = JobQueue(db_path=jobs_db)
+        # 关系等级：只按归档消息计数，模型无权参与判定
+        self.relationship = self._init_relationship(archive_dir)
         # 语义记忆（懒加载，失败降级为无语义）
         self._semantic = None
         self._semantic_dir = chroma_dir
@@ -74,6 +76,23 @@ class MemoryService:
         self.jobs.recover_stale()
         if auto_worker:
             self.start_worker()
+
+    def _init_relationship(self, archive_dir):
+        """关系等级存储：默认路径读配置；测试用临时归档时放到同级 index 下"""
+        try:
+            if not get("relationship.enabled", True):
+                return None
+            from backend.relationship import RelationshipStore
+            if archive_dir is None:
+                store = RelationshipStore()
+                # 首次建库从归档回填，升级后不会把老朋友当陌生人
+                store.ensure_backfill(self.archive)
+                return store
+            db = Path(self.archive.history_dir).parent / "index" / "relationships.sqlite3"
+            return RelationshipStore(db_path=str(db))
+        except Exception as e:
+            print(f"[Memory] 关系等级存储初始化失败，降级: {e}")
+            return None
 
     # ============ 对外接口（兼容旧 MemoryRetriever） ============
 
@@ -94,6 +113,16 @@ class MemoryService:
         )
         if not self.archive.append(event):
             return False
+        # 关系等级：按归档消息累加条数与首次出现时间（失败不影响记忆）
+        if self.relationship is not None:
+            try:
+                self.relationship.observe(
+                    speaker_id=event.speaker_id,
+                    display_name=event.speaker_name,
+                    channel_type=event.channel_type,
+                    channel_id=event.channel_id)
+            except Exception as e:
+                print(f"[Memory] 关系等级更新失败: {e}")
         # 同步索引，保证写入后立即可查；失败才入队异步重试
         try:
             r = self.indexer.index(event)
@@ -350,6 +379,16 @@ class MemoryService:
                             stats["skipped"] += 1
                             continue
                         if self.archive.append(ev):
+                            if self.relationship is not None:
+                                try:
+                                    self.relationship.observe(
+                                        speaker_id=ev.speaker_id,
+                                        display_name=ev.speaker_name,
+                                        channel_type=ev.channel_type,
+                                        channel_id=ev.channel_id,
+                                        ts=ev.timestamp)
+                                except Exception as e:
+                                    print(f"[Memory] 导入时关系等级更新失败: {e}")
                             if enqueue_index:
                                 self.jobs.enqueue("index", {"event_id": ev.id},
                                                   dedup_key=ev.id)

@@ -35,12 +35,21 @@ class ContextManager:
         "\n"
         "【态度】\n"
         "- 有自己的判断和偏好，不同意就直说，不附和、不说客服腔\n"
-        "- 可以吐槽，可以怼；但对方情绪低落时先接住，别补刀\n"
+        "- 对【关系】开关为“允许”的人可以吐槽、可以怼；其他人保持客气\n"
+        "- 对方情绪低落时先接住，别补刀\n"
         "- 外部知识不确定就直说不知道，不随便编\n"
         "\n"
+        "【关系】\n"
+        "- 每轮会给出【关系】段，等级由系统判定，按它执行；不要自己判断、不要提前升级\n"
+        "- 没给【关系】段时，按“陌生”对待\n"
+        "- 傲娇/毒舌/玩梗只看【关系】里的开关，不看聊了多久\n"
+        "- 开关为“禁止”时，不用“哥们/兄弟/宝”这类熟络称呼，也不阴阳怪气\n"
+        "- 【关系】是你自己知道的底细，不要把等级、条数、时长说给对方听\n"
+        "\n"
         "【玩梗尺度】\n"
-        "- 可以拿他开玩笑、嘴上损他：他基本只会觉得有意思，不用提前收敛\n"
-        "- 他没说“不舒服”就不用自我审查；他说过一次就记住\n"
+        "- 开关为“禁止”时：不玩梗、不毒舌、不傲娇，正常接话\n"
+        "- 开关为“允许”时：可以拿他开玩笑、嘴上损他，不用提前收敛\n"
+        "- 他不说“不舒服”就不用自我审查；他说过一次就记住\n"
         "- 不拿外貌、家人、人格缺陷做侮辱，不对任何群体开地图炮\n"
         "\n"
         "【记忆】\n"
@@ -73,7 +82,8 @@ class ContextManager:
     def prepare_context(self, messages: list, current_query: str = None, session_id: str = None,
                         system_as_role: bool = False, speaker_id: str = None,
                         channel_type: str = None, channel_id: str = None,
-                        speaker_hint: str = "", quote_hint: str = "") -> list:
+                        speaker_hint: str = "", quote_hint: str = "",
+                        speaker_name: str = "") -> list:
         """
         构建发送给模型的消息列表
         兼容 Mistral 等 [INST] 格式模型：不单独发 system 消息，
@@ -92,6 +102,11 @@ class ContextManager:
         # 动态内容（记忆/群上下文/梗/场景）统一放这里，最后拼到本轮 user 消息，
         # 保证 system + 历史前缀稳定，命中 Ollama 前缀缓存（否则每轮全量重算）
         dynamic_parts = []
+
+        # --- 关系等级：代码判定，放动态段最前面（本轮说话人是谁、什么等级）---
+        rel_text = self._relationship_block(speaker_id, speaker_name, channel_type)
+        if rel_text:
+            dynamic_parts.append(rel_text)
 
         # --- 第二级：长期记忆检索（语义优先，不足回退情景）---
         if self.memory_enabled and self.memory is not None and current_query:
@@ -298,6 +313,29 @@ class ContextManager:
                 self.memory.shutdown()
             except Exception as e:
                 print(f"[Context] 关闭记忆资源失败: {e}")
+
+    def _relationship_block(self, speaker_id, speaker_name, channel_type) -> str:
+        """
+        关系等级段：等级由 backend.relationship 按归档条数与认识时长判定。
+        只在本轮 user 尾部注入，system 保持字节级稳定。
+        """
+        if not speaker_id or not get("relationship.enabled", True):
+            return ""
+        store = getattr(self.memory, "relationship", None) if self.memory is not None else None
+        if store is None:
+            return ""
+        try:
+            rel = store.get(speaker_id, display_name=speaker_name or "")
+            if rel is None:
+                return ""
+            from backend.relationship import render_relationship_block
+            text = render_relationship_block(rel, channel_type or "private")
+            print("[Context] 关系: %s | %s | %d 条 | %.1f 小时"
+                  % (rel.display, rel.level_cn, rel.msg_count, rel.hours))
+            return text
+        except Exception as e:
+            print(f"[Context] 关系等级读取失败（不影响对话）: {e}")
+            return ""
 
     def _play_level(self):
         """

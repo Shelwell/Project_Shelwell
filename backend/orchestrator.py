@@ -11,7 +11,7 @@ from backend.reply_format import split_bubbles
 # 模型偶尔会把系统提示词当回复输出，这类内容不能进记忆库
 _PROMPT_POLLUTION_MARKS = [
     "你是 Shelwell", "【怎么说话", "【你记得的", "【输出格式",
-    "【禁止】", "【态度", "【说话风格", "【示例——",
+    "【禁止】", "【态度", "【说话风格", "【示例——", "【关系｜",
 ]
 
 # 模型输出的占位符/元提示，不是真回复
@@ -80,6 +80,7 @@ class Orchestrator:
                 speaker_id=speaker_id, channel_type=channel_type,
                 channel_id=channel_id,
                 speaker_hint=speaker_hint, quote_hint=quote_hint,
+                speaker_name=speaker_name,
             )
         except Exception as e:
             print(f"[Orchestrator] 上下文构建失败，降级为纯上下文: {e}")
