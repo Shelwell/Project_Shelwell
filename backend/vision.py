@@ -20,7 +20,7 @@ DEFAULT_PROMPT = ("用一句中文描述这张图片/表情包的内容和情绪
 
 DEFAULTS = {
     "enabled": True,
-    "model": "",                    # 空 = 跟随当前对话模型（直连 27B）
+    "model": "",                    # 空 = 跟随当前对话模型
     "max_side": 512,                # 最长边超过这个值就不识别
     "max_bytes": 2 * 1024 * 1024,   # 原始文件上限
     "max_images": 2,                # 单条消息最多处理几张
