@@ -59,7 +59,7 @@ def cmd_list(args):
         print(f"\nID: {mem_id}")
         print(f"时间: {rec['timestamp']}")
         print(f"用户: {rec['user'][:60]}")
-        print(f"Shelwell: {rec['assistant'][:60]}")
+        print(f"西尔维娅: {rec['assistant'][:60]}")
         print("-" * 70)
 
 def cmd_search(args):
@@ -78,7 +78,7 @@ def cmd_search(args):
         print(f"\nID: {mem_id}")
         print(f"时间: {rec['timestamp']}")
         print(f"用户: {rec['user']}")
-        print(f"Shelwell: {rec['assistant']}")
+        print(f"西尔维娅: {rec['assistant']}")
         print("-" * 70)
 
 def cmd_delete(args):
@@ -93,7 +93,7 @@ def cmd_delete(args):
     print(f"\n即将删除：")
     print(f"  时间: {rec['timestamp']}")
     print(f"  用户: {rec['user']}")
-    print(f"  Shelwell: {rec['assistant']}")
+    print(f"  西尔维娅: {rec['assistant']}")
     confirm = input("\n确认删除？(y/N): ").strip().lower()
     if confirm != "y":
         print("已取消。")
@@ -124,7 +124,7 @@ def cmd_edit(args):
     print(f"\n当前内容：")
     print(f"  时间: {rec['timestamp']}")
     print(f"  用户: {rec['user']}")
-    print(f"  Shelwell: {rec['assistant']}")
+    print(f"  西尔维娅: {rec['assistant']}")
     print("\n" + "=" * 70)
     print("直接回车保持原内容不变，输入新内容则替换。")
     print("输入 :q 取消编辑。\n")
@@ -137,8 +137,8 @@ def cmd_edit(args):
     if not new_user:
         new_user = rec["user"]
 
-    # 编辑 Shelwell 回复
-    new_assistant = input(f"\nShelwell 回复（当前：{rec['assistant'][:50]}...）\n> ").strip()
+    # 编辑 西尔维娅 回复
+    new_assistant = input(f"\n西尔维娅 回复（当前：{rec['assistant'][:50]}...）\n> ").strip()
     if new_assistant == ":q":
         print("已取消。")
         return
@@ -148,7 +148,7 @@ def cmd_edit(args):
     # 确认
     print(f"\n即将更新为：")
     print(f"  用户: {new_user}")
-    print(f"  Shelwell: {new_assistant}")
+    print(f"  西尔维娅: {new_assistant}")
     confirm = input("\n确认保存？(y/N): ").strip().lower()
     if confirm != "y":
         print("已取消。")
@@ -166,7 +166,7 @@ def cmd_edit(args):
         collection.delete(ids=[mem_id])
 
         # 生成新向量（调用 Ollama embedding）
-        combined_text = f"用户：{new_user}\nShelwell：{new_assistant}"
+        combined_text = f"用户：{new_user}\n西尔维娅：{new_assistant}"
         resp = requests.post(
             "http://localhost:11434/api/embeddings",
             json={"model": "nomic-embed-text", "prompt": combined_text},
@@ -303,7 +303,7 @@ def _update_jsonl(filepath, mem_id, new_user, new_assistant):
 # ---------- 入口 ----------
 
 def main():
-    parser = argparse.ArgumentParser(description="Shelwell 记忆管理工具")
+    parser = argparse.ArgumentParser(description="西尔维娅 记忆管理工具")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_list = sub.add_parser("list", help="列出记忆")

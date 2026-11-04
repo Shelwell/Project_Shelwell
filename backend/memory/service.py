@@ -326,11 +326,13 @@ class MemoryService:
 
     # ============ 群聊上下文 ============
 
-    def get_group_context(self, channel_id: str, limit: int = 10) -> list:
+    def get_group_context(self, channel_id: str, limit: int = 10,
+                          bot_name: str = "她") -> list:
         """
         拉取某群最近 N 轮消息，用于被触发时补充上下文。
         返回 [{"speaker": 昵称, "speaker_id": QQ, "text": 内容, "time": 时间, "is_bot": bool}, ...]
         speaker 用昵称而非 QQ 号——模型需要知道"谁在说话"才能理解对话逻辑
+        bot_name: 机器人自己的显示名（由调用方按当前人格传入）
         """
         events = self.archive.list_recent_by_channel(channel_id, limit=limit)
         out = []
@@ -345,7 +347,7 @@ class MemoryService:
             # 若该轮有 AI 回复（说明被触发过），也带上
             if ev.ai_msg:
                 out.append({
-                    "speaker": "Shelwell",
+                    "speaker": bot_name,
                     "speaker_id": "bot",
                     "text": ev.ai_msg,
                     "time": ev.timestamp,
@@ -401,6 +403,51 @@ class MemoryService:
             print(f"[Memory] 导入失败: {e}")
             stats["errors"] += 1
         return stats
+
+    # ============ 修改 ============
+
+    def update_event(self, event_id: str, user_msg: str = None,
+                     ai_msg: str = None) -> dict:
+        """
+        修改一条尚未提炼的情景记忆，并重建双索引。
+        已提炼（consolidated）的记录只能删除，不能修改——语义事实已经派生了，
+        改原文会让事实失去来源，因此这里直接拒绝。
+        """
+        ev = self.archive.get(event_id)
+        if not ev:
+            return {"ok": False, "message": "这条情景记忆不存在（可能已被删除）"}
+        if ev.consolidated:
+            return {"ok": False,
+                    "message": "这条情景记忆已经过语义提炼，只能删除，不能修改"}
+        if user_msg is None and ai_msg is None:
+            return {"ok": False, "message": "没有要修改的内容"}
+        if user_msg is not None:
+            ev.user_msg = str(user_msg)
+        if ai_msg is not None:
+            ev.ai_msg = str(ai_msg)
+        if not (ev.user_msg or "").strip() and not (ev.ai_msg or "").strip():
+            return {"ok": False, "message": "用户消息和 AI 回复不能同时为空"}
+
+        if not self.archive.update(ev):
+            return {"ok": False, "message": "写入归档失败，原内容未改动"}
+
+        indexed = False
+        r = {"vector": False, "lexical": False}
+        try:
+            # index() 内部对向量做 upsert、对 FTS 先删后插，足够覆盖旧内容
+            r = self.indexer.index(ev)
+            indexed = bool(r.get("vector") or r.get("lexical"))
+        except Exception as e:
+            print(f"[Memory] 修改后重建索引失败: {e}")
+
+        if r.get("vector") and r.get("lexical"):
+            msg = "已保存，向量索引与关键词索引已重建"
+        elif r.get("lexical"):
+            msg = "已保存，关键词索引已重建；向量索引失败（Ollama 恢复后可运行 rebuild_index）"
+        else:
+            msg = "已保存；索引更新失败（Ollama 恢复后可运行 rebuild_index 重建）"
+        return {"ok": True, "message": msg, "indexed": indexed,
+                "event": ev.to_dict()}
 
     # ============ 删除 ============
 

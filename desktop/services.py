@@ -684,10 +684,13 @@ def list_episodic_memories(page: int = 1, page_size: int = 20,
                 "timestamp": e.timestamp,
                 "session_id": e.session_id,
                 "speaker_id": e.speaker_id,
+                "speaker_name": e.speaker_name,
                 "channel_type": e.channel_type,
                 "channel_id": e.channel_id,
                 "user_msg": e.user_msg,
                 "ai_msg": e.ai_msg,
+                "consolidated": bool(e.consolidated),
+                "index_status": e.index_status,
             } for e in page_items],
             "total": total,
             "page": page,
@@ -797,6 +800,24 @@ def delete_episodic_memory(event_id: str) -> dict:
         msgs.append("语义来源清理失败: %s" % e)
 
     return {"ok": ok_any, "message": "；".join(msgs)}
+
+
+def update_episodic_memory(event_id: str, user_msg: str, ai_msg: str) -> dict:
+    """修改一条未提炼的情景记忆，并重建索引；已提炼的会被后端拒绝"""
+    if not event_id:
+        return {"ok": False, "message": "缺少记忆 ID"}
+    try:
+        from backend.memory.service import MemoryService
+        svc = MemoryService(auto_worker=False)
+        try:
+            return svc.update_event(event_id, user_msg=user_msg, ai_msg=ai_msg)
+        finally:
+            try:
+                svc.stop_worker()
+            except Exception:
+                pass
+    except Exception as e:
+        return {"ok": False, "message": "修改失败: %s" % e}
 
 
 def clear_semantic_memory() -> int:

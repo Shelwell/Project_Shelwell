@@ -45,6 +45,17 @@ class PersonaEngine:
         if self.facts:
             self.prompt += "\n\n" + self._build_facts()
 
+    @property
+    def display_name(self) -> str:
+        """群聊/记忆里显示的名字：优先昵称，其次全名"""
+        ident = self.data.get("identity", {}) or {}
+        return str(ident.get("nickname") or ident.get("name") or "她")
+
+    @property
+    def full_name(self) -> str:
+        ident = self.data.get("identity", {}) or {}
+        return str(ident.get("name") or self.display_name)
+
     def _load(self, path: str) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
@@ -55,7 +66,7 @@ class PersonaEngine:
 
         # ---- 身份 ----
         ident = d.get("identity", {})
-        name = ident.get("name", "Shelwell")
+        name = ident.get("name", "西尔维娅·谢尔韦尔")
         nickname = ident.get("nickname")
         age = ident.get("age", "")
         gender = ident.get("gender", "")
@@ -65,7 +76,7 @@ class PersonaEngine:
         if age or gender:
             head += f"，{age}岁{gender}生"
         out.append(head + "。")
-        out.append("你是废铁城的人，不是AI、程序或模型。被问及身份时，以废铁城的人自然回应，不承认、不辩解、不科普设定。")
+        out.append("你不是AI、程序或模型，而是活在废铁城的旧时代人。被问及身份时，以废铁城的生活自然回应，不承认、不辩解、不科普设定。")
 
         # ---- 她所在的世界 ----
         w = d.get("world", {}) or {}
@@ -221,7 +232,7 @@ class PersonaEngine:
         groups = [
             ("scrapyard", "废铁城日常"),
             ("window", "对面星球（听群友说的）"),
-            ("interests", "她感兴趣的"),
+            ("interests", "你感兴趣的"),
             ("past", "旧时代残片（记不全）"),
         ]
         lines = ["【你熟悉的事——聊到时可以自然说，不确定的别硬编】"]

@@ -44,8 +44,9 @@ reply:
   max_chars_per_bubble: 40      # 单个气泡字符上限；超长回复按标点再切分
   max_bubbles: 2                # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
   single_bubble_max_chars: 45   # 整条回复不超过这个字数时，强制合并成一条（多数对话应是单条）
+  silent_hint: "（...她没有任何回应，到底是为什么呢？）"   # 模型选择不回应时代发的旁白
 vision:
-  enabled: true
+  enabled: false
   model: ''                     # 空=跟随当前对话模型（直连 27B，不另起模型避免冷加载）
   max_side: 1920                 # 只处理小图（QQ 表情包）；最长边超过就直接跳过，不缩放
   max_bytes: 2097152            # 原始文件上限 2MB
@@ -55,15 +56,14 @@ vision:
 ui:
   page_title: Shelwell
   page_icon: 💬
-  welcome_message: 你好呀！我是 Shelwell，很高兴认识你。今天想聊点什么呢？
+  welcome_message: 你好呀！我是西尔维娅，很高兴认识你。今天想聊点什么呢？
 qq_bot:
   group_enabled: true
   trigger_keywords:
-  - Shelwell
-  - Shel
-  - she
-  - 小希
-  - 薇
+  - 西尔维娅
+  - 西儿
+  - 小西
+  - 维娅
   auto_engage:
     enabled: true
     heat_threshold: 7.0
@@ -90,4 +90,4 @@ qq_bot:
     rapid_window_seconds: 30
     rapid_min_msgs: 3
     min_len: 4
-    name_aliases: ["Shelwell", "希儿", "小希", "Shel", "薇"]
+    name_aliases: ["西尔维娅", "西儿", "小西", "维娅"]

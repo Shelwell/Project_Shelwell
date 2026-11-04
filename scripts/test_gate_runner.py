@@ -31,12 +31,12 @@ from gate import GateRunner
 
 cfg = {"mode": "active", "log_path": str(tmp / "gate.jsonl"),
        "active_hours": ["19:00-24:00"], "quiet_hours": ["00:30-09:00"],
-       "name_aliases": ["Shelwell", "小希"]}
+       "name_aliases": ["西尔维娅", "西儿"]}
 gr = GateRunner(cfg, str(tmp))
 check("active 模式生效", gr.enforce is True, gr.mode)
 
 now = time.time()
-r1 = gr.decide(group_id="g1", sender_id="1", sender_name="小明", text="小希在吗",
+r1 = gr.decide(group_id="g1", sender_id="1", sender_name="小明", text="西尔维娅在吗",
                ts=now, at_me=True, legacy_engage=False)
 check("@我 → 接", r1["decision"]["respond"] is True, r1["decision"])
 r2 = gr.decide(group_id="g1", sender_id="2", sender_name="小红", text="今天吃啥",

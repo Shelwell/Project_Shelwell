@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGroupBox, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QMessageBox, QFrame, QHeaderView, QCheckBox, QTimeEdit,
+    QDialog, QDialogButtonBox, QPlainTextEdit, QAbstractItemView,
 )
 from PySide6.QtCore import QTimer, Qt, QTime
 from PySide6.QtGui import QFont
@@ -138,12 +139,20 @@ class MemoryPage(QWidget):
         fl.addLayout(r2)
 
         # ---------- 表格 ----------
-        self.table = QTableWidget(0, 6)
+        tip = QLabel("双击情景记忆可修改；已经过语义提炼的条目只能删除，不能修改。")
+        tip.setStyleSheet("color:#888;font-size:12px;")
+        fl.addWidget(tip)
+
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["时间", "会话", "发言人", "用户消息", "AI 回复", "操作"])
+            ["时间", "会话", "发言人", "用户消息", "AI 回复", "状态", "操作"])
         self.table.setFont(QFont("Microsoft YaHei", 9))
         self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.doubleClicked.connect(self._on_double_click)
+        self._episodic_by_id = {}
         self._apply_header_modes()
         self.table.setMinimumHeight(280)
         fl.addWidget(self.table)
@@ -245,8 +254,9 @@ class MemoryPage(QWidget):
     def on_type_changed(self):
         self.table.clearSpans()
         # 必须先清空行：否则上一种模式留下的“删除”按钮会残留在新表格的单元格上
-        # （情景模式的操作列索引 5，正好是语义模式的“状态”列）
+        # （情景模式的操作列索引 6，语义模式的操作列索引 7，切换时必须整体重建）
         self.table.setRowCount(0)
+        self._episodic_by_id = {}
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         if self.cb_type.currentIndex() == 1:
@@ -255,9 +265,9 @@ class MemoryPage(QWidget):
             self.table.setHorizontalHeaderLabels(
                 ["事实", "类型", "权重", "命中", "置信度", "状态", "归档", "操作"])
         else:
-            self.table.setColumnCount(6)
+            self.table.setColumnCount(7)
             self.table.setHorizontalHeaderLabels(
-                ["时间", "会话", "发言人", "用户消息", "AI 回复", "操作"])
+                ["时间", "会话", "发言人", "用户消息", "AI 回复", "状态", "操作"])
         self._apply_header_modes()
         self.load_page(1)
 
@@ -269,7 +279,7 @@ class MemoryPage(QWidget):
         hh.setMinimumSectionSize(40)
         n = self.table.columnCount()
         defaults = {
-            6: [150, 110, 90, 260, 260],
+            7: [140, 100, 80, 220, 220, 70],
             8: [320, 90, 60, 50, 64, 70, 64],
         }.get(n, [])
         for i in range(n):
@@ -414,6 +424,7 @@ class MemoryPage(QWidget):
         self._cur_page = r["page"]
         self._pages = r["pages"]
         items = r["items"]
+        self._episodic_by_id = {}
         self.table.setRowCount(0)   # 清掉上一页残留的按钮控件
         self.table.setRowCount(len(items))
         for i, m in enumerate(items):
@@ -422,15 +433,61 @@ class MemoryPage(QWidget):
             spk = m.get("speaker_id", "")
             um = (m.get("user_msg") or "").replace("\n", " ")
             am = (m.get("ai_msg") or "").replace("\n", " ")
-            for c, v in enumerate([ts, sess, spk, um, am]):
+            consolidated = bool(m.get("consolidated"))
+            status = "已提炼·只读" if consolidated else "可编辑"
+            for c, v in enumerate([ts, sess, spk, um, am, status]):
                 item = QTableWidgetItem(str(v))
                 item.setToolTip(str(v))
+                if c == 0:
+                    item.setData(Qt.UserRole, m.get("id", ""))
+                if c == 5:
+                    from PySide6.QtGui import QColor
+                    item.setForeground(QColor("#999" if consolidated else "#2a8a5a"))
+                    item.setToolTip("已提炼，只能删除；双击不会打开编辑"
+                                    if consolidated else "双击修改内容")
                 self.table.setItem(i, c, item)
-            self.table.setCellWidget(i, 5, self._delete_btn("episodic", m.get("id", "")))
+            self._episodic_by_id[m.get("id", "")] = m
+            self.table.setCellWidget(i, 6, self._delete_btn("episodic", m.get("id", "")))
         self.lab_page.setText("第 %d / %d 页" % (self._cur_page, self._pages))
         self.lab_total.setText("共 %d 条" % r["total"])
         self.btn_prev.setEnabled(self._cur_page > 1)
         self.btn_next.setEnabled(self._cur_page < self._pages)
+
+    # ---------- 双击修改 ----------
+
+    def _on_double_click(self, index):
+        if self.cb_type.currentIndex() != 0 or index is None:
+            return
+        item = self.table.item(index.row(), 0)
+        if item is None:
+            return
+        eid = item.data(Qt.UserRole)
+        m = self._episodic_by_id.get(eid)
+        if not m:
+            return
+        if m.get("consolidated"):
+            QMessageBox.information(
+                self, "只能删除",
+                "这条情景记忆已经过语义提炼，只能删除，不能修改。\n"
+                "如果必须改内容，请先删除，再重新录入。")
+            return
+        dlg = EditEpisodicDialog(m, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        user_msg, ai_msg = dlg.values()
+        if (user_msg == (m.get("user_msg") or "")
+                and ai_msg == (m.get("ai_msg") or "")):
+            return
+        run_async(self, services.update_episodic_memory, self._on_updated,
+                  eid, user_msg, ai_msg)
+
+    def _on_updated(self, res):
+        res = res or {}
+        if res.get("ok"):
+            QMessageBox.information(self, "已保存", res.get("message", "已保存"))
+            self.load_page(self._cur_page)
+        else:
+            QMessageBox.warning(self, "修改失败", res.get("message", "未知错误"))
 
     # ---------- 单条删除 ----------
 
@@ -480,3 +537,45 @@ class MemoryPage(QWidget):
     def next_page(self):
         if self._cur_page < self._pages:
             self.load_page(self._cur_page + 1)
+
+
+class EditEpisodicDialog(QDialog):
+    """修改一条尚未提炼的情景记忆（用户消息 + AI 回复）"""
+
+    def __init__(self, item: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("修改情景记忆")
+        self.resize(720, 480)
+        layout = QVBoxLayout(self)
+
+        meta = QLabel(
+            "时间：%s　会话：%s　发言人：%s"
+            % ((item.get("timestamp") or "")[:19].replace("T", " "),
+               item.get("session_id", ""),
+               item.get("speaker_name") or item.get("speaker_id", "")))
+        meta.setStyleSheet("color:#888;font-size:12px;")
+        layout.addWidget(meta)
+
+        layout.addWidget(QLabel("用户消息"))
+        self.ed_user = QPlainTextEdit(item.get("user_msg") or "")
+        self.ed_user.setMinimumHeight(120)
+        layout.addWidget(self.ed_user)
+
+        layout.addWidget(QLabel("AI 回复"))
+        self.ed_ai = QPlainTextEdit(item.get("ai_msg") or "")
+        self.ed_ai.setMinimumHeight(140)
+        layout.addWidget(self.ed_ai)
+
+        tip = QLabel("保存后会重写归档，并重建向量索引与关键词索引。")
+        tip.setStyleSheet("color:#888;font-size:12px;")
+        layout.addWidget(tip)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText("保存")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self):
+        return self.ed_user.toPlainText(), self.ed_ai.toPlainText()

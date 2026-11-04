@@ -46,6 +46,11 @@ class ContextManager:
         "- 开关为“禁止”时，不用“哥们/兄弟/宝”这类熟络称呼，也不阴阳怪气\n"
         "- 【关系】是你自己知道的底细，不要把等级、条数、时长说给对方听\n"
         "\n"
+        "【沉默】\n"
+        "- 不想接、接不下去或情绪不好时，可以完全不回应：只输出 [SILENT]，不要加别的字\n"
+        "- 被 @、被点名或直接被提问时，除非确实无法回答，否则别沉默\n"
+        "- 沉默时系统会替你发一句旁白，不用自己写括号\n"
+        "\n"
         "【玩梗尺度】\n"
         "- 开关为“禁止”时：不玩梗、不毒舌、不傲娇，正常接话\n"
         "- 开关为“允许”时：可以拿他开玩笑、嘴上损他，不用提前收敛\n"
@@ -167,12 +172,19 @@ class ContextManager:
         # --- 群聊补充：拉取该群最近消息作为上下文（带发言人身份）---
         if channel_type == "group" and channel_id and self.memory_enabled and self.memory is not None:
             try:
-                group_msgs = self.memory.get_group_context(channel_id, limit=10)
+                try:
+                    group_msgs = self.memory.get_group_context(
+                        channel_id, limit=10,
+                        bot_name=self.persona_engine.display_name)
+                except TypeError:
+                    # 兼容只接受 (channel_id, limit) 的旧记忆桩/实现
+                    group_msgs = self.memory.get_group_context(channel_id, limit=10)
                 if group_msgs:
                     lines = []
                     speakers = {}
                     for item in group_msgs:
-                        who = "Shelwell" if item.get("is_bot") else item.get("speaker", "?")
+                        who = (self.persona_engine.display_name
+                               if item.get("is_bot") else item.get("speaker", "?"))
                         if not item.get("is_bot"):
                             speakers[who] = speakers.get(who, 0) + 1
                         lines.append(f"{who}：{item.get('text', '')}")

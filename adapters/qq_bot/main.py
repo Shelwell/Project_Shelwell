@@ -39,6 +39,7 @@ class QQBot:
         self.self_id = None
         self.sessions = {}       # session_id -> [{"role","content"}]
         self.orchestrator = Orchestrator()
+        self._last_silent = False   # 上一轮是否由模型选择沉默（旁白不算她说话）
         self.group_enabled = get("qq_bot.group_enabled", True)
         self.trigger_keywords = get("qq_bot.trigger_keywords", []) or []
         # 自动接话热度状态机
@@ -146,11 +147,13 @@ class QQBot:
 
         # 群聊：先归档（全量存储），再判断是否回复
         need_engage = False
+        at_me_flag = False
         if msg_type == "group":
             if not self.group_enabled:
                 return
             # @ 或叫名字 = 强信号
             at_me = self.is_at_me(evt, text)
+            at_me_flag = at_me
             is_q = self._is_question(text)
             # 观察这条消息，更新热度
             heat = self.engagement.observe(group_id, user_id, text,
@@ -244,7 +247,8 @@ class QQBot:
 
         reply = await self.think(session_id, user_text, user_id, msg_type, group_id,
                                  evt, quoted=quoted,
-                                 images=[p["b64"] for p in image_payloads])
+                                 images=[p["b64"] for p in image_payloads],
+                                 at_me=at_me_flag)
         # 群聊被动回复：引用用户触发的那条消息本身，不 @ 人
         # （@ 仅用于后续主动找人的功能）
         if msg_type == "group":
@@ -253,14 +257,15 @@ class QQBot:
         else:
             final_reply_to = None
         await self.send_reply(evt, reply, reply_to=final_reply_to, at_user=None)
-        # 记录她自己说了什么（供"回复我"/话题连续性判定）
-        if msg_type == "group" and self.gate is not None:
+        silent = bool(getattr(self, "_last_silent", False))
+        # 记录她自己说了什么（供"回复我"/话题连续性判定）；沉默旁白不算她说话
+        if msg_type == "group" and self.gate is not None and not silent:
             try:
                 self.gate.on_bot_spoke(group_id, reply)
             except Exception as e:
                 log.warning("门禁记录发言失败: %s", e)
-        # 接话后热度减半 + 进入冷却
-        if msg_type == "group" and need_engage:
+        # 接话后热度减半 + 进入冷却（沉默不消耗热度）
+        if msg_type == "group" and need_engage and not silent:
             self.engagement.on_engaged(group_id)
 
     def _cache_message(self, evt):
@@ -471,7 +476,9 @@ class QQBot:
         return f"qqg:{evt['group_id']}:{evt['user_id']}"
 
     async def think(self, session_id, text, speaker_id="", channel_type="private",
-                    channel_id="", evt=None, quoted=None, images=None):
+                    channel_id="", evt=None, quoted=None, images=None,
+                    at_me=False):
+        self._last_silent = False
         history = self.sessions.setdefault(session_id, [])
         # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
         history.append({"role": "user", "content": text})
@@ -490,6 +497,8 @@ class QQBot:
                             or str(speaker_id or ""))
         if channel_type == "group" and evt:
             speaker_hint = f"当前发言者：{speaker_name or speaker_id}"
+            if at_me:
+                speaker_hint += "（这条在 @ 你，必须给出回应，不要沉默）"
 
         # 引用说明
         quote_hint = ""
@@ -522,6 +531,15 @@ class QQBot:
             history.pop()
             return "刚走神了\n你再说一次"
 
+        # 模型选择沉默：只发旁白，不把旁白写进对话历史
+        if result.get("silent"):
+            self._last_silent = True
+            log.info("模型选择沉默，仅发送旁白")
+            if len(history) > MAX_SESSION_MESSAGES:
+                del history[: len(history) - MAX_SESSION_MESSAGES]
+            return result["reply"]
+
+        self._last_silent = False
         reply = result["reply"]
         history.append({"role": "assistant", "content": reply})
 

@@ -2,16 +2,42 @@
 # 职责：L4 编排层——一次对话的完整流程
 # 收消息 → 建上下文 → 调模型 → 清洗回复 → 归档 → 返回
 
+from __future__ import annotations
+
+import re
+
 from backend.config_loader import get
 from backend.context_manager import ContextManager
 from backend.llm import provider
 from backend.reply_format import split_bubbles
 
+# 模型选择“不回应”时只输出这个标记；system 提示词里写死了同一个值
+SILENT_MARKER = "[SILENT]"
+DEFAULT_SILENT_HINT = "（...她没有任何回应，到底是为什么呢？）"
+
+# 判断沉默：空输出，或只有标记（允许标点/引号/括号变体）
+_SILENT_ONLY_RE = re.compile(
+    r"^[\s\[【<（(]*\s*SILENT\s*[\s\]】>）).。!！?？~～`'\"“”‘’]*$", re.IGNORECASE)
+_SILENT_TOKEN_RE = re.compile(r"\[SILENT\]|【SILENT】|<SILENT>", re.IGNORECASE)
+
+
+def is_silent_reply(text: str) -> bool:
+    """模型是否选择了沉默（空输出也算）"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    return bool(_SILENT_ONLY_RE.match(t))
+
+
+def strip_silent_marker(text: str) -> str:
+    """普通回复里误带的标记要清掉，避免漏到 QQ"""
+    return _SILENT_TOKEN_RE.sub("", text or "").strip()
+
 
 # 模型偶尔会把系统提示词当回复输出，这类内容不能进记忆库
 _PROMPT_POLLUTION_MARKS = [
-    "你是 Shelwell", "【怎么说话", "【你记得的", "【输出格式",
-    "【禁止】", "【态度", "【说话风格", "【示例——", "【关系｜",
+    "你是西尔维娅", "你是 Sylvia", "【怎么说话", "【你记得的", "【输出格式",
+    "【禁止】", "【态度", "【说话风格", "【示例——", "【关系｜", "【沉默",
 ]
 
 # 模型输出的占位符/元提示，不是真回复
@@ -58,7 +84,8 @@ class Orchestrator:
             current_query: 当前用户输入；为 None 时从 messages 末尾自动取
 
         返回:
-            {"reply": str, "ok": bool, "error": str|None}
+            {"reply": str, "bubbles": list, "ok": bool,
+             "error": str|None, "silent": bool}
         """
         if not messages:
             return {"reply": "", "ok": False, "error": "empty_messages"}
@@ -92,8 +119,30 @@ class Orchestrator:
         except Exception as e:
             return {"reply": "", "ok": False, "error": f"model_error: {e}"}
 
+        # 2.5 模型选择沉默：空输出，或只输出 [SILENT]
+        if is_silent_reply(raw_reply):
+            hint = str(get("reply.silent_hint", DEFAULT_SILENT_HINT)
+                       or DEFAULT_SILENT_HINT).strip()
+            if not hint:
+                hint = DEFAULT_SILENT_HINT
+            print("[Orchestrator] 模型选择沉默，只发旁白")
+            if current_query and not self._is_pure_meme_ask(current_query):
+                try:
+                    # 旁白不是她的回复，不写进记忆；用户消息仍然归档（关系计数也靠它）
+                    self.context.archive_turn(
+                        user_msg=current_query, ai_msg="", session_id=session_id,
+                        speaker_id=speaker_id or "",
+                        channel_type=channel_type or "",
+                        channel_id=channel_id or "",
+                        speaker_name=speaker_name or "",
+                    )
+                except Exception as e:
+                    print(f"[Orchestrator] 沉默归档失败（不影响对话）: {e}")
+            return {"reply": hint, "bubbles": [hint], "ok": True,
+                    "error": None, "silent": True}
+
         # 3. 清洗 + 切气泡（格式交给代码，模型只管内容）
-        reply = self._clean_reply(raw_reply)
+        reply = self._clean_reply(strip_silent_marker(raw_reply))
         bubbles = split_bubbles(
             reply,
             limit=get("reply.max_chars_per_bubble", 40),
@@ -121,7 +170,8 @@ class Orchestrator:
             except Exception as e:
                 print(f"[Orchestrator] 归档失败（不影响对话）: {e}")
 
-        return {"reply": reply, "bubbles": bubbles, "ok": True, "error": None}
+        return {"reply": reply, "bubbles": bubbles, "ok": True,
+                "error": None, "silent": False}
 
     def shutdown(self):
         """释放编排层持有的资源"""
@@ -152,18 +202,19 @@ class Orchestrator:
         """
         清洗模型输出。脚本能做的都在这做，提示词只管风格：
         1. 字面 \\n 转真换行
-        2. 去角色标签（用户：/你：/Shelwell：）
+        2. 去角色标签（用户：/你：/西尔维娅：）
         3. 去方括号昵称前缀（[张三] / 【张三】）
         4. 去引用/回复前缀（引用张三：/回复某人：）
         表情符号不删，由提示词引导少用。
         """
         if not text:
             return ""
-        import re
         text = text.replace("\\n", "\n")
 
         # 角色标签
-        tags = ["用户：", "用户:", "Shelwell：", "Shelwell:", "你：", "你:"]
+        tags = ["用户：", "用户:", "西尔维娅：", "西尔维娅:",
+                "西尔维娅·谢尔韦尔：", "西尔维娅·谢尔韦尔:",
+                "Sylvia：", "Sylvia:", "你：", "你:"]
 
         # 昵称前缀：[张三] 或 【张三】
         nick_re = re.compile(r"^\s*[\[【][^\]】]{1,20}[\]】]\s*")

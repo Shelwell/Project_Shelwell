@@ -88,6 +88,50 @@ class Archive:
                 break
         return out
 
+    # ---------- 修改 ----------
+
+    def update(self, event: MemoryEvent) -> bool:
+        """
+        按 ID 覆盖一条情景记忆（重写所在天的 JSONL）。
+        只允许改内容，不移动时间/ID；返回是否找到并写入。
+        """
+        target = self.get(event.id)
+        if not target:
+            return False
+        day = target.timestamp[:10]
+        path = os.path.join(self.history_dir, f"{day}.jsonl")
+        if not os.path.exists(path):
+            return False
+        tmp = path + ".tmp"
+        try:
+            found = False
+            with open(path, "r", encoding="utf-8") as src, \
+                 open(tmp, "w", encoding="utf-8") as dst:
+                for line in src:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except Exception:
+                        dst.write(line + "\n")
+                        continue
+                    if d.get("id") == event.id:
+                        dst.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+                        found = True
+                    else:
+                        dst.write(json.dumps(d, ensure_ascii=False) + "\n")
+            if not found:
+                os.remove(tmp)
+                return False
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            print(f"[Archive] 修改失败: {e}")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return False
+
     # ---------- 删除 ----------
 
     def delete(self, event_id: str) -> bool:

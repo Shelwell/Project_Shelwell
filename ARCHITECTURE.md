@@ -7,7 +7,7 @@
 
 ## 1. 项目定位
 
-Shelwell 是一个**带独立人格和长期记忆的中文 AI 伴侣**。
+Shelwell（角色：西尔维娅·谢尔韦尔 / Sylvia Shelwell）是一个**带独立人格和长期记忆的中文 AI 伴侣**。
 
 核心主张：
 - **人格来自权重，不是提示词**：通过 LoRA 微调把性格写进模型，而非靠 system prompt 伪装。
@@ -217,7 +217,7 @@ Shelwell 的“知识”分两层，与对话记忆完全隔离。
 |---|---|
 | 首页 | 一键启动全部服务、服务/容器/端口状态总览、日志查看、单项重启 |
 | 人格管理 | persona 切换、facts 切换、LoRA 挂载、新建/删除人格、模板示例 |
-| 记忆管理 | 情景/语义记忆查看、搜索、单条删除、清空、提炼设置 |
+| 记忆管理 | 情景/语义记忆查看、搜索、单条删除、清空、提炼设置；情景记忆双击编辑（已提炼只读） |
 | 关系 | 查看发言人 5 级关系、设置唯一“依赖”对象、清除单条记录 |
 | 模型切换 | Ollama 对话模型列表（过滤嵌入模型）、生成参数 |
 | 插件管理 | 占位，待 `docs/plugin-spec.md` |
@@ -286,6 +286,28 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 
 ---
 
+## 5.8 模型沉默（0 输出）
+
+**定位**：模型有权判断“这一刻不回应”，但 QQ 不能发空消息，所以由代码代发旁白。
+
+- 提示词：`OUTPUT_FORMAT` 的【沉默】段要求模型只输出 `[SILENT]`；被 @/点名/直接提问时要求尽量回应
+- 判定：`orchestrator.is_silent_reply()` 识别空输出、`[SILENT]`、`【SILENT】`、`<SILENT>` 及标点变体
+- 结果：返回 `{"silent": True, "bubbles": [旁白]}`，旁白取自 `reply.silent_hint`
+- 记忆：旁白不是她的回复，不写入 AI 侧；用户消息仍归档（`ai_msg=""`，关系计数保留）
+- 适配层：不把旁白写进对话历史；门禁不把旁白记成“她发言”，也不消耗接话冷却
+- 正常回复里误带的 `[SILENT]` 会被 `strip_silent_marker()` 清掉
+
+---
+
+## 5.9 情景记忆编辑
+
+- 控制台记忆页双击情景条目 → 弹窗修改“用户消息 / AI 回复”
+- 后端 `MemoryService.update_event()` 重写 JSONL 并重建向量 + FTS 索引
+- `consolidated=True`（已被语义提炼）的条目只允许删除，修改请求会被拒绝
+- 关系计数不受编辑影响（仍按归档条数计算）
+
+---
+
 ## 6. 配置规范
 
 `config/app_config.yaml` 现有字段：
@@ -301,7 +323,7 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索（"你与我"：私密/动态/关系） |
 | `knowledge.enabled` / `collection_name` / `top_k` / `min_similarity` / `path` | 世界档案 RAG（"世界"：公有/静态/事实），独立 collection |
 | `relationship.enabled` / `db_path` / `thresholds.*` | 关系等级：5 级阈值（条数/小时），SQLite 路径 |
-| `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` | 回复气泡拆分（代码负责格式；短回复强制合并成一条） |
+| `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` / `silent_hint` | 回复气泡拆分；`silent_hint` 是模型选择沉默时代发的旁白 |
 | `vision.enabled` / `model` / `max_side` / `max_bytes` / `max_images` / `max_per_minute` / `cache_path` | 图片识别：直连主模型、≤512 小图、指纹缓存、频率上限 |
 | `qq_bot.group_gate.*` | 群聊接话门禁：`mode`（active 正式决策 / shadow 只记录）、阈值、活跃/静默时段、冷却、称呼别名 |
 | `ui.*` | 界面 |
@@ -461,6 +483,9 @@ system 与历史前缀保持不变，Ollama 前缀缓存才能命中（否则每
 - [x] 嵌入模型升级：nomic → bge-m3（1024 维，中文语义更强）
 - [x] 关系等级：5 级确定性判定（条数+时长），SQLite 持久化，群聊/私聊权限矩阵
 - [x] 控制台“关系”页：查看等级、设置唯一依赖对象、清除记录
+- [x] 角色改名：西尔维娅·谢尔韦尔（Sylvia Shelwell）/ 触发词 西尔维娅·西儿·小西·维娅
+- [x] 模型沉默：0 输出 / [SILENT] → QQ 只发括号旁白，不进 AI 记忆
+- [x] 情景记忆编辑：控制台双击修改；已提炼条目只读，只能删除
 
 待办：
 1. **API 预设模型名**：各家模型名已过时，需重新调研后更新 `API_PRESETS`

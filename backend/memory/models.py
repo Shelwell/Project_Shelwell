@@ -76,7 +76,7 @@ class MemoryEvent:
     @property
     def combined_text(self) -> str:
         """用于向量化的合并文本"""
-        return f"用户：{self.user_msg}\nShelwell：{self.ai_msg}"
+        return f"用户：{self.user_msg}\n西尔维娅：{self.ai_msg}"
 
     def to_dict(self) -> dict:
         return asdict(self)
