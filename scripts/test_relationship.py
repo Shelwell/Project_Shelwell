@@ -25,7 +25,6 @@ T = {
     "stranger_max_msgs": 50, "stranger_max_hours": 120,
     "acquaint_max_msgs": 300, "acquaint_max_hours": 360,
     "known_max_msgs": 1000, "known_max_hours": 1080,
-    "trust_min_msgs": 1000, "trust_min_hours": 1080,
     "depend_min_msgs": 3000, "depend_min_hours": 2160,
 }
 
@@ -39,22 +38,25 @@ print("[1] 等级阈值")
 cases = [
     (0, 0, False, "stranger"),
     (50, 120, False, "stranger"),
-    (51, 120, False, "acquaintance"),     # 条数够，时间不够
-    (300, 120, False, "acquaintance"),
-    (301, 120, False, "known"),
-    (1000, 120, False, "known"),
-    (1001, 120, False, "known"),          # 只满足条数 → 封顶在了解
-    (1001, 1080, False, "known"),
-    (1001, 1081, False, "trust"),         # 条数、时间同时达标
-    (50, 121, False, "acquaintance"),     # 时间够，条数不够
-    (50, 360, False, "acquaintance"),
-    (50, 361, False, "known"),
-    (50, 1080, False, "known"),
-    (50, 1081, False, "known"),           # 只满足时间 → 封顶在了解
-    (3001, 2161, False, "trust"),
-    (3001, 2161, True, "dependent"),      # 全达标且被指定
-    (3000, 2161, True, "trust"),          # 条数没到 3001
-    (3001, 2160, True, "trust"),          # 时间没到 2161
+    (51, 120, False, "stranger"),        # 条数够，时间仍是陌生档（短板）
+    (300, 120, False, "stranger"),
+    (301, 120, False, "stranger"),
+    (1000, 120, False, "stranger"),
+    (1001, 120, False, "stranger"),      # 条数再多，时间不够也是陌生
+    (50, 121, False, "stranger"),        # 时间够，条数不够也是陌生
+    (50, 1081, False, "stranger"),
+    (3001, 100, False, "stranger"),      # 刷屏但认识 4 天 → 陌生
+    (51, 121, False, "acquaintance"),
+    (300, 360, False, "acquaintance"),
+    (301, 361, False, "known"),
+    (1000, 1080, False, "known"),
+    (1001, 1080, False, "known"),        # 时间差 1 小时 → 了解
+    (1001, 1081, False, "trust"),        # 两个维度同时过线
+    (3001, 2161, False, "trust"),        # 全达标但未指定 → 最高信任
+    (3001, 2161, True, "dependent"),     # 全达标且被指定
+    (3000, 2161, True, "trust"),         # 条数没到 3001
+    (3001, 2160, True, "trust"),         # 时间没到 2161
+    (10, 5000, False, "stranger"),       # 认识半年但只有 10 条
 ]
 for msgs, hours, dep, expected in cases:
     got = compute_level(msgs, hours, dep, T)
@@ -82,13 +84,20 @@ store.observe("1001", "小明", "private", "1001", ts=t0 + timedelta(hours=1))
 r = store.get("1001", now=t0 + timedelta(hours=122))
 check("消息计数累加", r.msg_count == 2, r.msg_count)
 check("首次时间不被覆盖", r.first_seen.startswith("2026-01-01"), r.first_seen)
-check("时间够 → 认识", r.level == "acquaintance", r.level)
+check("时间够但条数不够 → 陌生", r.level == "stranger", r.level)
 check("显示名保存", r.display_name == "小明", r.display_name)
+
+# 补到 51 条：条数、时间都进「认识」档
+for _ in range(49):
+    store.observe("1001", "小明", "private", "1001", ts=t0)
+r = store.get("1001", now=t0 + timedelta(hours=122))
+check("51 条 + 122 小时 → 认识", r.msg_count == 51 and r.level == "acquaintance",
+      f"{r.msg_count}/{r.level}")
 
 store2 = RelationshipStore(db_path=str(tmp / "rel.sqlite3"),
                            dependent_id="1001", thresholds=T)
 r2 = store2.get("1001", now=t0 + timedelta(hours=122))
-check("重新打开后数据仍在", r2.msg_count == 2 and r2.display_name == "小明")
+check("重新打开后数据仍在", r2.msg_count == 51 and r2.display_name == "小明")
 check("唯一依赖对象生效", store2.is_dependent("1001") and not store2.is_dependent("1002"))
 
 # ---------- 4. 归档回填 ----------
@@ -114,7 +123,7 @@ rb = store3.get("1001", now=datetime(2026, 3, 1, tzinfo=timezone.utc))
 check("回填条数", rb.msg_count == 2, rb.msg_count)
 check("回填首次时间", rb.first_seen.startswith("2026-01-01"), rb.first_seen)
 check("回填只跑一次", store3.ensure_backfill(arc) == 0)
-check("回填后等级按真实时间算（条数不够→了解）", rb.level == "known", rb.level)
+check("回填后等级按真实时间算（条数不够→陌生）", rb.level == "stranger", rb.level)
 store3.clear_all()
 check("清空后不会被回填 resurrect", store3.ensure_backfill(arc) == 0)
 

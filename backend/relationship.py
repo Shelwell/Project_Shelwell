@@ -4,8 +4,8 @@
 # 设计约束（2026-11-05）：
 #   1. 等级只由代码按「聊天条数 + 认识时长」计算，模型不得自行推断或升格
 #   2. 会话里第一次出现的人，从「陌生」开始；关系随真实互动累积，重启不丢
-#   3. 前三级（陌生/认识/了解）两个维度满足任意一个即可；
-#      「信任」要求条数与时长同时达标，「依赖」还必须是唯一指定对象
+#   3. 条数、时长各自套档后取较低档（短板决定关系）；「信任」要求两者同时
+#      超过阈值，「依赖」还必须是唯一指定对象
 #   4. 数据存 SQLite（memory/index/relationships.sqlite3），JSONL 归档仍是真相源，
 #      首次建库时从归档回填，避免升级后老朋友被当成陌生人
 
@@ -40,9 +40,7 @@ DEFAULT_THRESHOLDS = {
     "acquaint_max_msgs": 300,
     "acquaint_max_hours": 360,      # 15 天
     "known_max_msgs": 1000,
-    "known_max_hours": 1080,        # 45 天
-    "trust_min_msgs": 1000,
-    "trust_min_hours": 1080,        # 45 天
+    "known_max_hours": 1080,        # 45 天；超过即进入「信任」档
     "depend_min_msgs": 3000,
     "depend_min_hours": 2160,       # 90 天
 }
@@ -117,6 +115,8 @@ def _later(a: str, b: str) -> str:
 
 
 def _tier_by_msgs(count: int, t: dict) -> int:
+    if count > int(t["depend_min_msgs"]):
+        return 4
     if count > int(t["known_max_msgs"]):
         return 3
     if count > int(t["acquaint_max_msgs"]):
@@ -127,6 +127,8 @@ def _tier_by_msgs(count: int, t: dict) -> int:
 
 
 def _tier_by_hours(hours: float, t: dict) -> int:
+    if hours > int(t["depend_min_hours"]):
+        return 4
     if hours > int(t["known_max_hours"]):
         return 3
     if hours > int(t["acquaint_max_hours"]):
@@ -142,9 +144,10 @@ def compute_level(msg_count: int, hours: float, is_dependent: bool = False,
     计算关系等级（纯函数，便于测试）。
 
     规则：
-      - 条数、时长各自套档，取较高的那一档（前三级满足任一即可）
-      - 「信任」要求条数、时长同时超过 trust 阈值；只满足一边时封顶在「了解」
-      - 「依赖」要求同时超过 depend 阈值，且必须是唯一指定的对象
+      - 条数、时长各自套档，最终取**较低**的那一档（短板决定关系）
+      - 因此「信任」要求条数、时长同时超过阈值；只满足一边时由低的一边决定
+      - 「依赖」要求两个维度都超过 depend 阈值，且必须是唯一指定的对象
+      - 未指定的对象最高只能到「信任」，不会出现「依赖」
     """
     t = dict(DEFAULT_THRESHOLDS)
     if thresholds:
@@ -152,13 +155,9 @@ def compute_level(msg_count: int, hours: float, is_dependent: bool = False,
     count = max(0, int(msg_count or 0))
     hours = max(0.0, float(hours or 0.0))
 
-    tier = max(_tier_by_msgs(count, t), _tier_by_hours(hours, t))
-    if tier >= 3 and not (count > int(t["trust_min_msgs"])
-                          and hours > int(t["trust_min_hours"])):
-        tier = 2
-    if is_dependent and count > int(t["depend_min_msgs"]) \
-            and hours > int(t["depend_min_hours"]):
-        tier = 4
+    tier = min(_tier_by_msgs(count, t), _tier_by_hours(hours, t))
+    if tier == 4 and not is_dependent:
+        tier = 3
     return LEVELS[tier]
 
 

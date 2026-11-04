@@ -152,22 +152,21 @@ class RelationshipPage(QWidget):
                 return default
 
         return (
-            "陌生：0-%d 条 或 0-%d 小时（%d 天）　"
-            "认识：%d-%d 条 或 %d-%d 小时（%d 天）\n"
-            "了解：%d-%d 条 或 %d-%d 小时（%d 天）　"
+            "等级取条数与认识时长的较低档（短板），两个维度都达标才进入该档：\n"
+            "陌生：≤%d 条 或 ≤%d 小时（%d 天）\n"
+            "认识：>%d 条 且 >%d 小时（%d 天）\n"
+            "了解：>%d 条 且 >%d 小时（%d 天）\n"
             "信任：>%d 条 且 >%d 小时（%d 天）\n"
             "依赖：>%d 条 且 >%d 小时（%d 天），且被设为依赖对象（全局限 1 人）\n"
             "傲娇/毒舌/玩梗：私聊“信任/依赖”，群聊仅“依赖”。等级由代码按归档消息计算，模型无权升降。"
             % (val("stranger_max_msgs"), val("stranger_max_hours"),
                day(val("stranger_max_hours")),
-               val("stranger_max_msgs") + 1, val("acquaint_max_msgs"),
-               val("stranger_max_hours") + 1, val("acquaint_max_hours"),
+               val("stranger_max_msgs"), val("stranger_max_hours"),
+               day(val("stranger_max_hours")),
+               val("acquaint_max_msgs"), val("acquaint_max_hours"),
                day(val("acquaint_max_hours")),
-               val("acquaint_max_msgs") + 1, val("known_max_msgs"),
-               val("acquaint_max_hours") + 1, val("known_max_hours"),
+               val("known_max_msgs"), val("known_max_hours"),
                day(val("known_max_hours")),
-               val("trust_min_msgs"), val("trust_min_hours"),
-               day(val("trust_min_hours")),
                val("depend_min_msgs"), val("depend_min_hours"),
                day(val("depend_min_hours")))
         )
