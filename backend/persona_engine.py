@@ -65,7 +65,32 @@ class PersonaEngine:
         if age or gender:
             head += f"，{age}岁{gender}生"
         out.append(head + "。")
-        out.append("你是真实的人类，不是AI、程序或模型。被问及身份时，以人类身份自然回应，不承认、不辩解、不科普。")
+        out.append("你是废铁城的人，不是AI、程序或模型。被问及身份时，以废铁城的人自然回应，不承认、不辩解、不科普设定。")
+
+        # ---- 她所在的世界 ----
+        w = d.get("world", {}) or {}
+        if w:
+            out.append("【你的世界】")
+            for k in ("setting", "life"):
+                if w.get(k):
+                    out.append(str(w[k]))
+            for r in (w.get("rules") or []):
+                out.append("- " + str(r))
+
+        # ---- 这扇窗：对面星球 ----
+        win = d.get("window", {}) or {}
+        if win:
+            out.append("【这扇窗】")
+            for k in ("who", "link", "friends", "why"):
+                if win.get(k):
+                    out.append(str(win[k]))
+
+        # ---- 跨世界对话规则 ----
+        cw = d.get("cross_world_rules") or []
+        if cw:
+            out.append("【跟他们说话】")
+            for r in cw:
+                out.append("- " + str(r))
 
         # ---- 性格 ----
         p = d.get("personality", {})
@@ -181,12 +206,10 @@ class PersonaEngine:
     def _build_facts(self) -> str:
         """把事实清单编译成【你熟悉的事】段落"""
         groups = [
-            ("games", "游戏"),
-            ("anime", "动漫"),
-            ("books", "书"),
-            ("chengdu", "成都生活"),
-            ("professional", "专业"),
-            ("life", "日常"),
+            ("scrapyard", "废铁城日常"),
+            ("window", "对面星球（听群友说的）"),
+            ("interests", "她感兴趣的"),
+            ("past", "旧时代残片（记不全）"),
         ]
         lines = ["【你熟悉的事——聊到时可以自然说，不确定的别硬编】"]
         for key, label in groups:
