@@ -181,7 +181,8 @@ class MemoryService:
                                              "session_id": ev.session_id,
                                              "speaker_id": ev.speaker_id,
                                              "channel_type": ev.channel_type,
-                                             "channel_id": ev.channel_id},
+                                             "channel_id": ev.channel_id,
+                                             "user_msg": (ev.user_msg or "")[:200]},
                                 "similarity": 0.5, "source": "lexical"}
         except Exception as e:
             print(f"[Memory] 关键词检索失败: {e}")
