@@ -7,7 +7,7 @@
 
 ## 1. 项目定位
 
-Shelwell（角色：西尔维娅·谢尔韦尔 / Sylvia Shelwell）是一个**带独立人格和长期记忆的中文 AI 伴侣**。
+Shelwell（角色：西尔维娅·希尔薇 / Sylvia Shelwell）是一个**带独立人格和长期记忆的中文 AI 伴侣**。
 
 核心主张：
 - **人格来自权重，不是提示词**：通过 LoRA 微调把性格写进模型，而非靠 system prompt 伪装。
