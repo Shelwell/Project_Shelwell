@@ -9,11 +9,11 @@ ollama:
 generation:
   temperature: 0.7
   num_predict: 1024
-  num_ctx: 32768
+  num_ctx: 65536
   think: false
   keep_alive: "4h"          # 模型常驻：避免冷加载（27B 冷启约 50 秒）
 context:
-  max_length: 30
+  max_length: 120           # 短期上下文窗口（条）；配合 64k 上下文与前缀缓存
   memory_enabled: true
 memory:
   top_k: 3

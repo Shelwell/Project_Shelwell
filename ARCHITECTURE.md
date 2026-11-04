@@ -357,6 +357,20 @@ Shelwell 常驻运行由 Windows 服务托管，不依赖终端窗口。
 
 **启动脚本**：`scripts/start_all.ps1` 只做“检查并拉起”，不常驻。首次部署、手动恢复时运行。
 
+**Ollama 服务环境变量**（决定显存/上下文能力，改完需重启服务）：
+
+| 变量 | 值 | 作用 |
+|---|---|---|
+| `OLLAMA_MODELS` | `E:\Shelwell\Ollama_models` | 模型目录 |
+| `OLLAMA_MAX_LOADED_MODELS` | `2` | 同时驻留的模型数 |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | KV 缓存 8bit 量化，显存减半（长上下文关键） |
+| `OLLAMA_FLASH_ATTENTION` | `1` | 量化 KV 的前提，并降低长上下文开销 |
+
+写入方式：管理员运行 `scripts/set_ollama_env.ps1`（保留已有变量、只覆盖上面两项，并重启服务）。
+
+**上下文与缓存**：`num_ctx=65536`、`keep_alive=4h`（避免冷加载）。动态记忆/群上下文注入在本轮 user 消息，
+system 与历史前缀保持不变，Ollama 前缀缓存才能命中（否则每轮全量重算）。
+
 **日志位置**：
 - `logs/launcher.log` — 启动脚本
 - `logs/ollama.log` / `logs/ollama.err.log` — Ollama 服务

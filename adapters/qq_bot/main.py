@@ -30,7 +30,7 @@ log = logging.getLogger("qq_bot")
 HOST = "0.0.0.0"
 PORT = 8765
 PATH = "/onebot"
-MAX_SESSION_MESSAGES = 40   # 每个 session 保留的最大消息条数（约 20 轮）
+MAX_SESSION_MESSAGES = 200   # 每个 session 保留的最大消息条数（窗口由 context.max_length 控制）
 
 
 class QQBot:

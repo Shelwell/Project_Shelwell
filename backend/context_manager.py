@@ -84,6 +84,9 @@ class ContextManager:
 
         # --- 收集所有 system 内容 ---
         system_parts = [self.system_instruction]
+        # 动态内容（记忆/群上下文/梗/场景）统一放这里，最后拼到本轮 user 消息，
+        # 保证 system + 历史前缀稳定，命中 Ollama 前缀缓存（否则每轮全量重算）
+        dynamic_parts = []
 
         # --- 第二级：长期记忆检索（语义优先，不足回退情景）---
         if self.memory_enabled and self.memory is not None and current_query:
@@ -105,14 +108,14 @@ class ContextManager:
                     picked = select_for_injection(fact_objs)
                     if picked:
                         text = format_injection(picked)
-                        system_parts.append(text)
+                        dynamic_parts.append(text)
                         print(f"[Context] 注入 {len(picked)} 条语义事实（按权重过滤）")
                     else:
                         print("[Context] 语义命中全部低于权重线，跳过注入")
                 except Exception as e:
                     print(f"[Context] 语义注入失败，降级为简单拼接: {e}")
                     lines = [h["content"] for h in semantic_hits]
-                    system_parts.append(
+                    dynamic_parts.append(
                         "【你记得的关于用户的事实】\n"
                         + "\n".join("- " + l for l in lines)
                     )
@@ -131,7 +134,7 @@ class ContextManager:
                 if memories:
                     try:
                         memory_text = self._format_memories(memories)
-                        system_parts.append(
+                        dynamic_parts.append(
                             "【你和用户之前的对话片段】\n"
                             "以下是相关的历史对话原文。参考这些内容，"
                             "不要说自己不记得、记性不好。\n"
@@ -164,7 +167,7 @@ class ContextManager:
                         "你只对当前的发言对象说话。\n"
                         + "\n".join(lines)
                     )
-                    system_parts.append(block)
+                    dynamic_parts.append(block)
                     print(f"[Context] 注入群上下文 {len(group_msgs)} 条 | 发言人: {roster}")
             except Exception as e:
                 print(f"[Context] 群上下文获取失败: {e}")
@@ -176,7 +179,7 @@ class ContextManager:
         if quote_hint:
             scene_hints.append(quote_hint)
         if scene_hints:
-            system_parts.append("【当前场景】\n" + "\n".join(scene_hints))
+            dynamic_parts.append("【当前场景】\n" + "\n".join(scene_hints))
 
         # --- 梗百科：消息像在问梗时才查，命中注入那一条 ---
         if current_query:
@@ -184,14 +187,32 @@ class ContextManager:
                 from backend.memewiki.injector import build_injection
                 meme_text = build_injection(current_query, play_level=self._play_level())
                 if meme_text:
-                    system_parts.append(meme_text)
+                    dynamic_parts.append(meme_text)
                     print("[Context] 梗百科命中，已注入")
             except Exception as e:
                 print(f"[Context] 梗百科注入失败（不影响对话）: {e}")
 
         combined_system = "\n\n".join(system_parts)
+        combined_dynamic = "\n\n".join(dynamic_parts)
 
-        # --- OpenAI 兼容接口：人格用独立 system 消息承载，指令跟随更稳 ---
+        # 动态参考信息拼到本轮 user 消息前面：system 与历史保持字节级不变，
+        # Ollama 的前缀缓存才能命中，每轮只重算新增的尾部 token
+        if combined_dynamic:
+            idx = None
+            for i in range(len(recent) - 1, -1, -1):
+                if recent[i].get("role") == "user":
+                    idx = i
+                    break
+            if idx is None:
+                recent.append({"role": "user", "content": combined_dynamic})
+            else:
+                msg = dict(recent[idx])
+                msg["content"] = (combined_dynamic + "\n\n"
+                                  + (msg.get("content") or "")).strip()
+                recent[idx] = msg
+            print(f"[Context] 动态参考下沉到 user 尾部: {len(combined_dynamic)} 字")
+
+        # --- 人格用独立 system 消息承载（稳定前缀）---
         if system_as_role:
             recent.insert(0, {"role": "system", "content": combined_system})
             return recent
