@@ -84,6 +84,8 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
+    # 启停 Windows 服务需要管理员权限：启动时请求 UAC（右键运行也可）
+    uac_admin=True,
     icon=None,
 )
 

@@ -4,6 +4,13 @@ PySide6 桌面应用，替代 Web 版控制台（`app/console.py`），零端口
 
 ## 运行（源码）
 E:\Shelwell.venv\Scripts\python.exe desktop\main.pytext复制下载
+## 管理员权限（重要）
+
+启停 Windows 服务（ShelwellOllama / ShelwellQQBot）需要管理员权限：
+
+- **打包版**：exe 内嵌 `requireAdministrator` manifest，双击时会弹 UAC，必须点“是”
+- **源码运行**：启动后检测到非管理员会自动以管理员身份重启（`-m desktop.main`）；若取消 UAC，首页会显示橙色提示并提供“以管理员身份重启”按钮
+
 ## 打包
 cd E:\Shelwell.venv\Scripts\python.exe -m PyInstaller desktop\ShelwellConsole.spec --noconfirm --cleantext复制下载
 产物：`dist/ShelwellConsole/ShelwellConsole.exe`（onedir 模式，约 104MB）。
