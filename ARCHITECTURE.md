@@ -133,7 +133,7 @@ E:\Shelwell\
 | 上下文管理 | `backend/context_manager.py` | 短期上下文 + 记忆注入 + 系统指令合并 | 已有 |
 | 长期记忆 | `backend/memory_retriever.py` | 兼容层，委托 memory/service.py | 已有 |
 | 记忆系统 | `backend/memory/` | 情景+语义双层记忆、双索引、巩固、遗忘 | 已有 |
-| 知识库 | `backend/knowledge_base.py` | 外部知识 RAG（游戏/动漫/本地生活） | 规划 |
+| 知识库 | `backend/knowledge_base.py` | 世界设定 RAG（废铁城/旧时代），与对话记忆严格分离 | 已有 |
 | 人格引擎 | `backend/persona_engine.py` | 读取 persona/facts yaml，生成人格上下文 | 已有 |
 | 视觉管道 | `backend/vision.py` | 图片/表情包识别：直连主模型、指纹缓存去重、≤512 小图护栏 | 已有 |
 | 表情包管理 | `backend/sticker_manager.py`（待建） | 图库入库、打标、按情绪选图 | 规划 |
@@ -253,7 +253,8 @@ desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      �
 | `ollama.url` / `chat_timeout` / `embedding_timeout` | Ollama 服务 |
 | `generation.temperature` / `num_predict` / `num_ctx` / `think` | 推理参数 |
 | `context.max_length` / `memory_enabled` | 上下文 |
-| `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索 |
+| `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索（"你与我"：私密/动态/关系） |
+| `knowledge.enabled` / `collection_name` / `top_k` / `min_similarity` / `path` | 世界档案 RAG（"世界"：公有/静态/事实），独立 collection |
 | `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` | 回复气泡拆分（代码负责格式；短回复强制合并成一条） |
 | `vision.enabled` / `model` / `max_side` / `max_bytes` / `max_images` / `max_per_minute` / `cache_path` | 图片识别：直连主模型、≤512 小图、指纹缓存、频率上限 |
 | `qq_bot.group_gate.*` | 群聊接话门禁：`mode`（active 正式决策 / shadow 只记录）、阈值、活跃/静默时段、冷却、称呼别名 |

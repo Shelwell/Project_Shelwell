@@ -66,6 +66,10 @@ class ContextManager:
             self.memory = None
             self.memory_enabled = False
 
+        # 长期 RAG 知识库（客观设定）；懒加载，失败降级为不用
+        self._knowledge = None
+        self._knowledge_tried = False
+
     def prepare_context(self, messages: list, current_query: str = None, session_id: str = None,
                         system_as_role: bool = False, speaker_id: str = None,
                         channel_type: str = None, channel_id: str = None,
@@ -182,6 +186,29 @@ class ContextManager:
         if scene_hints:
             dynamic_parts.append("【当前场景】\n" + "\n".join(scene_hints))
 
+        # --- 长期 RAG 知识库：客观世界设定（与对话记忆严格分离）---
+        # 记忆库 = "你与我"（私密/动态/关系）；知识库 = "世界"（公有/静态/事实）
+        if current_query:
+            try:
+                kb = self._get_knowledge()
+                if kb is not None:
+                    kcfg = get("knowledge", {}) or {}
+                    hits = kb.search(
+                        current_query,
+                        top_k=int(kcfg.get("top_k", 2)),
+                        min_similarity=float(kcfg.get("min_similarity", 0.55)))
+                    if hits:
+                        lines = ["- " + h["content"] for h in hits]
+                        dynamic_parts.append(
+                            "【你世界里的档案（客观设定，不是对话记忆）】\n"
+                            "以下是废铁城与旧时代的客观设定，只在相关时参考；"
+                            "不要和对方说过的事混在一起、不要互相校正。\n"
+                            + "\n".join(lines))
+                        print("[Context] 注入世界档案 %d 条 | %s"
+                              % (len(hits), ", ".join(h["id"] for h in hits)))
+            except Exception as e:
+                print(f"[Context] 知识库检索失败（不影响对话）: {e}")
+
         # --- 梗百科：消息像在问梗时才查，命中注入那一条 ---
         if current_query:
             try:
@@ -295,6 +322,21 @@ class ContextManager:
             return str(rt.get("active.persona")) + "|" + str(rt.get("active.facts"))
         except Exception:
             return ""
+
+    def _get_knowledge(self):
+        """懒加载知识库；失败或未启用时返回 None（不影响对话）"""
+        if self._knowledge_tried:
+            return self._knowledge
+        self._knowledge_tried = True
+        try:
+            if not get("knowledge.enabled", True):
+                return None
+            from backend.knowledge_base import build_from_config
+            self._knowledge = build_from_config()
+        except Exception as e:
+            print(f"[Context] 知识库初始化失败，降级为不注入: {e}")
+            self._knowledge = None
+        return self._knowledge
 
     def _refresh_persona(self):
         """runtime 人格变化时重建 PersonaEngine 和系统指令"""

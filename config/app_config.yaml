@@ -11,14 +11,20 @@ generation:
   num_predict: 1024
   num_ctx: 65536
   think: false
-  keep_alive: "4h"          # 模型常驻：避免冷加载（27B 冷启约 50 秒）
+  keep_alive: "0.5h"          # 模型常驻：避免冷加载（27B 冷启约 50 秒）
 context:
   max_length: 120           # 短期上下文窗口（条）；配合 64k 上下文与前缀缓存
   memory_enabled: true
 memory:
   top_k: 3
-  min_similarity: 0.35
+  min_similarity: 0.5
   collection_name: shelwell_memory
+knowledge:
+  enabled: true
+  collection_name: shelwell_knowledge
+  top_k: 2                      # 单轮最多注入几条世界档案
+  min_similarity: 0.55          # 低于此相似度宁可不注入，避免无关设定
+  path: config/persona_prompts/shelwell_knowledge.jsonl
 reply:
   max_chars_per_bubble: 40      # 单个气泡字符上限；超长回复按标点再切分
   max_bubbles: 2                # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
@@ -26,7 +32,7 @@ reply:
 vision:
   enabled: true
   model: ''                     # 空=跟随当前对话模型（直连 27B，不另起模型避免冷加载）
-  max_side: 512                 # 只处理小图（QQ 表情包）；最长边超过就直接跳过，不缩放
+  max_side: 1920                 # 只处理小图（QQ 表情包）；最长边超过就直接跳过，不缩放
   max_bytes: 2097152            # 原始文件上限 2MB
   max_images: 2                 # 单条消息最多处理几张图
   max_per_minute: 10            # 视觉调用频率上限，防止群刷图拖垮对话
@@ -69,4 +75,4 @@ qq_bot:
     rapid_window_seconds: 30
     rapid_min_msgs: 3
     min_len: 4
-    name_aliases: ["Shelwell", "希儿", "小希", "Shel"]
+    name_aliases: ["Shelwell", "希儿", "小希", "Shel", "薇"]
