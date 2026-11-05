@@ -25,7 +25,7 @@ def check(name, cond, detail=""):
 p = PersonaEngine()
 print("[1] 人格名")
 check("显示名是西尔维娅", p.display_name == "西尔维娅", p.display_name)
-check("全名正确", p.full_name == "西尔维娅·谢尔韦尔", p.full_name)
+check("全名正确", p.full_name == "西尔维娅·希尔薇", p.full_name)
 check("提示词含新名", "西尔维娅" in p.prompt)
 check("提示词不含旧名 Shelwell", "Shelwell" not in p.prompt)
 check("提示词不含旧昵称", "希儿" not in p.prompt and "小希" not in p.prompt)

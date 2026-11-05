@@ -9,6 +9,7 @@ import re
 from backend.config_loader import get
 from backend.context_manager import ContextManager
 from backend.llm import provider
+from backend.llm.trace import start_trace, format_error
 from backend.reply_format import split_bubbles
 
 # 模型选择“不回应”时只输出这个标记；system 提示词里写死了同一个值
@@ -38,7 +39,31 @@ def strip_silent_marker(text: str) -> str:
 _PROMPT_POLLUTION_MARKS = [
     "你是西尔维娅", "你是 Sylvia", "【怎么说话", "【你记得的", "【输出格式",
     "【禁止】", "【态度", "【说话风格", "【示例——", "【关系｜", "【沉默",
+    "[关系｜", "关系｜系统判定", "当前说话人：", "以下是相关的历史对话原文",
+    "【群里刚才在聊】", "【当前场景】", "【背景资料结束】",
 ]
+
+# 上下文复述：模型把动态背景资料整段抄回来，不是正常回复
+_CONTEXT_ECHO_MARKS = (
+    "关系｜系统判定", "当前说话人：", "以下是相关的历史对话原文",
+    "【群里刚才在聊】", "【当前场景】", "【背景资料结束】",
+)
+
+
+def _looks_like_context_echo(text: str) -> bool:
+    """判断回复是否在复述注入的动态上下文（发送前拦截）"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    # 正常回复不会以关系段/说话人标签开头
+    if t.startswith(("关系｜", "[关系｜", "【关系｜", "当前说话人：")):
+        return True
+    hits = sum(1 for m in _CONTEXT_ECHO_MARKS if m in t)
+    if hits >= 2:
+        return True
+    # 单标记但长文本，也按复述处理（例如只抄了场景段）
+    return hits >= 1 and len(t) >= 200
+
 
 # 模型输出的占位符/元提示，不是真回复
 _PLACEHOLDER_MARKS = [
@@ -74,7 +99,8 @@ class Orchestrator:
     def chat(self, messages: list, session_id: str = "default", current_query: str = None,
              speaker_id: str = None, channel_type: str = None, channel_id: str = None,
              speaker_name: str = "", speaker_hint: str = "", quote_hint: str = "",
-             keep_alive: str = None) -> dict:
+             keep_alive: str = None, direct: bool = True,
+             session_summary: str = "") -> dict:
         """
         执行一次完整对话。
 
@@ -82,6 +108,7 @@ class Orchestrator:
             messages: 完整对话历史 [{"role": "user"/"assistant", "content": "..."}]
             session_id: 会话标识，用于记忆隔离
             current_query: 当前用户输入；为 None 时从 messages 末尾自动取
+            direct: 是否直接互动；默认 True（本方法只处理真正要回复的轮次）
 
         返回:
             {"reply": str, "bubbles": list, "ok": bool,
@@ -97,6 +124,7 @@ class Orchestrator:
                     break
 
         # 1. 构建上下文（短期 + 长期记忆 + 人格指令）
+        build_error = ""
         try:
             # 人格指令一律用独立 system 消息承载：Ollama 的 chat template
             # （Mistral Nemo / Qwen 系）都支持 system role；塞进 user 消息会让
@@ -108,16 +136,43 @@ class Orchestrator:
                 channel_id=channel_id,
                 speaker_hint=speaker_hint, quote_hint=quote_hint,
                 speaker_name=speaker_name,
+                session_summary=session_summary,
             )
         except Exception as e:
+            build_error = str(e)
             print(f"[Orchestrator] 上下文构建失败，降级为纯上下文: {e}")
             prepared = messages[-get("context.max_length", 30):]
+
+        # 调试追踪：记录实际送入模型的完整 messages / 原始输出 / 错误
+        trace = start_trace(prepared, meta={
+            "kind": "chat",
+            "session_id": session_id,
+            "speaker": speaker_name or speaker_id or "",
+            "speaker_id": speaker_id or "",
+            "channel_type": channel_type or "",
+            "channel_id": channel_id or "",
+            "query": (current_query or "")[:300],
+            "build_error": build_error,
+        }, kind="chat")
 
         # 2. 调模型
         try:
             raw_reply = self._call_model(prepared, keep_alive=keep_alive)
+            usage = provider.get_last_usage()
         except Exception as e:
+            trace.finish(error=f"model_error: {e}",
+                         error_detail=format_error(e))
             return {"reply": "", "ok": False, "error": f"model_error: {e}"}
+
+        # 2.2 上下文复述/提示词泄漏拦截：不发送、不归档
+        if _looks_like_context_echo(raw_reply) or _looks_like_prompt(raw_reply):
+            hint = str(get("reply.silent_hint", DEFAULT_SILENT_HINT)
+                       or DEFAULT_SILENT_HINT).strip() or DEFAULT_SILENT_HINT
+            print("[Orchestrator] 检测到上下文复述，已拦截（不发送/不归档）")
+            trace.finish(raw_reply=raw_reply, cleaned_reply=hint,
+                         bubbles=[hint], silent=True, error="context_echo")
+            return {"reply": hint, "bubbles": [hint], "ok": True,
+                    "error": None, "silent": True, "usage": usage}
 
         # 2.5 模型选择沉默：空输出，或只输出 [SILENT]
         if is_silent_reply(raw_reply):
@@ -135,11 +190,14 @@ class Orchestrator:
                         channel_type=channel_type or "",
                         channel_id=channel_id or "",
                         speaker_name=speaker_name or "",
+                        direct=direct,
                     )
                 except Exception as e:
                     print(f"[Orchestrator] 沉默归档失败（不影响对话）: {e}")
+            trace.finish(raw_reply=raw_reply, cleaned_reply=hint,
+                         bubbles=[hint], silent=True)
             return {"reply": hint, "bubbles": [hint], "ok": True,
-                    "error": None, "silent": True}
+                    "error": None, "silent": True, "usage": usage}
 
         # 3. 清洗 + 切气泡（格式交给代码，模型只管内容）
         reply = self._clean_reply(strip_silent_marker(raw_reply))
@@ -150,7 +208,10 @@ class Orchestrator:
             single_max=get("reply.single_bubble_max_chars", 45),
         )
         if not bubbles:
-            return {"reply": "", "ok": False, "error": "empty_reply"}
+            trace.finish(raw_reply=raw_reply, cleaned_reply=reply,
+                         bubbles=[], error="empty_reply")
+            return {"reply": "", "ok": False, "error": "empty_reply",
+                    "usage": usage}
         reply = "\n".join(bubbles)
 
         # 4. 归档（跳过 prompt 污染 / 纯问梗）
@@ -166,12 +227,15 @@ class Orchestrator:
                     channel_type=channel_type or "",
                     channel_id=channel_id or "",
                     speaker_name=speaker_name or "",
+                    direct=direct,
                 )
             except Exception as e:
                 print(f"[Orchestrator] 归档失败（不影响对话）: {e}")
 
+        trace.finish(raw_reply=raw_reply, cleaned_reply=reply,
+                     bubbles=bubbles, silent=False)
         return {"reply": reply, "bubbles": bubbles, "ok": True,
-                "error": None, "silent": False}
+                "error": None, "silent": False, "usage": usage}
 
     def shutdown(self):
         """释放编排层持有的资源"""
@@ -213,7 +277,7 @@ class Orchestrator:
 
         # 角色标签
         tags = ["用户：", "用户:", "西尔维娅：", "西尔维娅:",
-                "西尔维娅·谢尔韦尔：", "西尔维娅·谢尔韦尔:",
+                "西尔维娅·希尔薇：", "西尔维娅·希尔薇:",
                 "Sylvia：", "Sylvia:", "你：", "你:"]
 
         # 昵称前缀：[张三] 或 【张三】

@@ -1,498 +1,142 @@
-# Shelwell 项目架构
+# Shelwell 架构总览
 
-> 本文档是 Shelwell 的**唯一架构真相源**。Agent 和开发者修改代码前必读。
-> 任何新功能必须按本文档的分层规则嵌入，不得随意新增顶层目录或破坏既有边界。
+> **这份文档只回答全局问题**：项目是什么、分成哪几层、边界在哪、接下来做什么。
+> 具体接口、参数、实现方法和字段定义，放在各程序目录的 `README.md` 里。
+> 文件索引见 [文件树.md](文件树.md)，跨模块规范见 [docs/README.md](docs/README.md)。
 
 ---
 
 ## 1. 项目定位
 
-Shelwell（角色：西尔维娅·希尔薇 / Sylvia Shelwell）是一个**带独立人格和长期记忆的中文 AI 伴侣**。
+Shelwell（角色：**西尔维娅·希尔薇** / Sylvia Shelwell）是一个**带独立人格、长期记忆和关系演化**的中文 AI 伴侣，不是通用问答助手。
 
-核心主张：
-- **人格来自权重，不是提示词**：通过 LoRA 微调把性格写进模型，而非靠 system prompt 伪装。
-- **记忆分层**：短期上下文 + 长期向量记忆 + 对话归档，三级优先级。
-- **多端接入**：同一套后端，可接 Web UI、QQ 等任意前端。
+- **形态**：本地 27B 模型（Ollama）+ QQ 群聊/私聊 + Windows 桌面控制台
+- **核心体验**：她记得你、对不同的人有不同态度、会主动接话，也会选择沉默
+- **边界**：
+  - 不做全能 Agent，不替用户操作电脑
+  - 模型不负责“记不记得”“关系几级”这类确定性状态，状态由代码维护
+  - 人格与关系是产品核心，不把回复简化成客服式问答
+- **部署目标**：单机 Windows，Ollama、QQ 接入、控制台三部分可独立启停
 
-当前阶段：第三阶段（人格 LoRA 插件）进行中。训练集已备，本地 12B 训练受显存限制，训练方案待定。
+## 2. 项目大纲
 
----
+当前能力按“人格 → 记忆 → 关系 → 对话 → 群聊 → 控制台”展开：
 
-## 2. 现有目录盘点
-```
-E:\Shelwell\
-├── .venv/                    # 运行环境（Python 3.12.7）
-├── backend/                  # 后端核心
-│   ├── config_loader.py      # 部署期配置
-│   ├── runtime_config.py     # 运行期配置（runtime.yaml）
-│   ├── context_manager.py    # 上下文构建（语义优先，情景回退）
-│   ├── memory_retriever.py   # 记忆兼容层
-│   ├── persona_engine.py     # 人格编译（persona + facts）
-│   ├── relationship.py       # 关系等级（5 级，代码判定）
-│   ├── orchestrator.py       # L4 编排
-│   ├── llm/                  # L2 模型层
-│   │   ├── provider.py       # 统一推理接口
-│   │   └── usage.py          # 用量统计
-│   └── memory/               # L3 记忆系统
-│       ├── models.py         # 数据模型
-│       ├── archive.py        # JSONL 归档
-│       ├── indexer.py        # Chroma + FTS5 双索引
-│       ├── embedder.py       # 向量化
-│       ├── jobs.py           # 任务队列
-│       ├── service.py        # 聚合入口
-│       ├── semantic.py       # 语义事实存储
-│       ├── extractor.py      # 事实提炼
-│       ├── consolidator.py   # 巩固流程
-│       └── forgetting.py     # 权重与遗忘
-├── desktop/                  # 桌面管理控制台（PySide6）
-│   ├── main.py               # 主窗口 + 首页
-│   ├── worker.py             # 线程池后台任务
-│   ├── services.py           # 业务逻辑层
-│   ├── runtime_hook_ssl.py   # 打包 SSL 证书修正
-│   ├── ShelwellConsole.spec  # 打包配置
-│   └── pages/                # 功能页
-├── adapters/                 # L5 接入层
-│   └── qq_bot/               # QQ 接入（NapCat 反向 WS）
-├── config/                   # 配置
-│   ├── app_config.yaml
-│   ├── runtime.yaml          # 含密钥，gitignore
-│   ├── runtime.example.yaml
-│   └── persona_prompts/
-├── plugins/                  # 开源插件参考（非运行时）
-├── scripts/                  # 工具脚本
-├── memory/                   # 运行时记忆（gitignore）
-├── logs/                     # 日志（gitignore）
-├── dist/                     # 打包产物（gitignore）
-├── ARCHITECTURE.md
-├── requirements.txt
-├── requirements-train.txt
-├── 待办清单.txt
-├── 文件树.md
-└── 大纲.txt
-```
-## 3. 目标架构（分层）
-
-新功能按以下五层归位。**跨层调用只能自上而下，禁止反向依赖。**
-```
-┌─────────────────────────────────────────────┐
-│  L5 接入层  adapters/ · desktop/             │  协议适配 / 管理界面
-│  QQ Bot · 桌面控制台 · CLI(待建)              │
-├─────────────────────────────────────────────┤
-│  L4 编排层  backend/orchestrator.py          │  一次对话的完整流程
-│  收消息 → 建上下文 → 调模型 → 归档 → 回消息    │
-├─────────────────────────────────────────────┤
-│  L3 能力层  backend/ · backend/memory/       │  可复用的能力模块
-│  context_manager · memory(情景/语义/巩固/遗忘)│
-│  persona_engine · vision(未来) · sticker(未来)│
-├─────────────────────────────────────────────┤
-│  L2 模型层  backend/llm/                     │  推理后端封装
-│  provider(已有) · usage · lora_loader(待建)   │
-├─────────────────────────────────────────────┤
-│  L1 基础设施  config/ · memory/ · logs/       │  配置/存储/日志
-│  config_loader · runtime_config              │
-└─────────────────────────────────────────────┘
-```
-**各层职责**：
-
-| 层 | 职责 | 禁止 |
+| 能力 | 说明 | 状态 |
 |---|---|---|
-| L5 接入 | 协议转换、消息收发、UI 渲染 | 不写业务逻辑，不直接调 L2/L1 |
-| L4 编排 | 串起一次对话的完整流程 | 不实现具体能力，只做调度 |
-| L3 能力 | 上下文、记忆、人格、视觉、表情 | 不关心消息从哪来、往哪发 |
-| L2 模型 | 封装 Ollama/Unsloth/嵌入模型调用 | 不处理业务语义 |
-| L1 基础设施 | 配置、存储、日志、路径 | 不含任何业务逻辑 |
+| 人格系统 | persona/facts yaml 编译为 system 提示词，支持切换 | 已有 |
+| 长期记忆 | 情景 JSONL + 语义事实 + 向量/FTS 双索引 | 已有 |
+| 关系演化 | 按直接互动与认识时长判定 5 级，唯一依赖对象 | 已有 |
+| 对话编排 | 上下文构建、模型调用、清洗、切气泡、归档 | 已有 |
+| 模型沉默 | 模型可输出 `[SILENT]`，QQ 只发旁白 | 已有 |
+| QQ 群聊 | 触发词、回复引用、门禁、热度、多人归属 | 已有 |
+| 群聊状态机 | 最小版 IDLE/WATCH/QUEUED/COOLDOWN，shadow 运行 | 已有 |
+| 世界知识 | 设定 RAG，与“你与我”的记忆分离 | 已有 |
+| 图片识别 | 表情包/小图识别，指纹缓存 | 已有（默认关闭） |
+| 桌面控制台 | 服务、人格、记忆、关系、模型、调试 | 已有 |
+| 语义自动巩固 | 每日提炼能力已实现，默认关闭 | 已有（默认关闭） |
+| 离线生活模拟 | 闲置时在世界观内生成有因果闭环的生活日志（实验，不进入事实记忆） | 实验/规划 |
+| 主动聊天 | 群聊主动 @ 某人 | 规划 |
+| LoRA 挂载 | 人格模型切换 | 规划 |
 
----
-## 4. 模块职责细则
+## 3. 架构规划
 
-### L1 基础设施
+### 3.1 五层结构
 
-| 模块 | 路径 | 职责 | 接口 |
-|---|---|---|---|
-| 配置加载 | `backend/config_loader.py` | 加载 `config/app_config.yaml`，单例缓存 | `load_config(reload)`, `get(path, default)` |
-| 配置本体 | `config/app_config.yaml` | 模型/推理/记忆/UI 全部可调参数 | — |
-| 日志 | `backend/logger.py`（待建） | 统一日志，分级输出到 `logs/` | `get_logger(name)` |
+```text
+L5 接入层     adapters/ + desktop/           QQ、控制台
+L4 编排层     backend/orchestrator.py        一次对话的流程
+L3 能力层     backend/ + backend/memory/     记忆、人格、关系、知识、视觉
+L2 模型层     backend/llm/                   Ollama / OpenAI 兼容 API
+L1 基础设施   config/ + 文件系统 + SQLite    配置、存储、日志
+```
 
-**规则**：所有硬编码的参数必须迁到 `app_config.yaml`，通过 `get("a.b.c")` 读取。新增配置项必须同步更新本文档第 6 节。
+**依赖方向**：L5 → L4 → L3 → L2 → L1。下层不反向 import 上层；`backend/` 不 import `adapters/` 或 `desktop/`。
 
-### L2 模型层
+### 3.2 一次对话主链路
 
-| 模块 | 路径 | 职责 | 状态 |
-|---|---|---|---|
-| Ollama 客户端 | `backend/llm/ollama_client.py`（待建） | 封装 `/api/chat`、`/api/embeddings`，统一超时和重试 |
-| 模型注册表 | `backend/llm/model_registry.py`（待建） | 可用模型清单、切换、加载确认 |
-| 推理提供方 | `backend/llm/provider.py` | ollama / openai 兼容 API 统一接口 | 已有 |
-| LoRA 管理 | `backend/llm/lora_loader.py`（待建） | 挂载/卸载 LoRA，人格切换 |
-| 嵌入器 | `backend/llm/embedder.py`（待建） | 文本向量化，供记忆模块调用 |
+```text
+QQ 消息 / 控制台请求
+  → ContextManager 构建：system + 历史 + 动态记忆/关系/知识
+  → Orchestrator 调 Provider
+  → 回复清洗 + 气泡拆分 + 沉默判定
+  → 归档到 JSONL / 更新关系
+  → 返回 QQ / 控制台
+```
 
-**规则**：L3 及以上**禁止直接 `import requests` 调 Ollama**，必须走 L2 封装。当前 `memory_retriever.py` 里直接调 embedding 接口，属于历史遗留，重构时下沉到 L2。
+关键点：
 
-### L3 能力层
+- **system 前缀冻结**：人格指令放独立 system；动态记忆/关系/知识下沉到本轮 user 尾部，避免每轮改 system 导致缓存失效
+- **真相与索引分离**：JSONL 是权威，Chroma/FTS 只是可重建索引
+- **状态与文本分离**：关系等级、是否沉默、门禁决策由代码判定，模型只执行
 
-| 模块 | 路径 | 职责 | 状态 |
-|---|---|---|---|
-| 上下文管理 | `backend/context_manager.py` | 短期上下文 + 记忆注入 + 系统指令合并 | 已有 |
-| 长期记忆 | `backend/memory_retriever.py` | 兼容层，委托 memory/service.py | 已有 |
-| 记忆系统 | `backend/memory/` | 情景+语义双层记忆、双索引、巩固、遗忘 | 已有 |
-| 知识库 | `backend/knowledge_base.py` | 世界设定 RAG（废铁城/旧时代），与对话记忆严格分离 | 已有 |
-| 人格引擎 | `backend/persona_engine.py` | 读取 persona/facts yaml，生成人格上下文 | 已有 |
-| 关系等级 | `backend/relationship.py` | 按聊天条数+认识时长判定 5 级（陌生/认识/了解/信任/依赖），SQLite 持久化，唯一依赖对象 | 已有 |
-| 视觉管道 | `backend/vision.py` | 图片/表情包识别：直连主模型、指纹缓存去重、≤512 小图护栏 | 已有 |
-| 表情包管理 | `backend/sticker_manager.py`（待建） | 图库入库、打标、按情绪选图 | 规划 |
-| 场景系统 | `backend/scenario_manager.py`（待建） | 场景配置注入，动态调整语气 | 规划 |
-| 群聊接话决策 | `backend/group_policy.py` | @/回复我/热聊/静默/兴趣计分，决定"该不该接话" | 已有（影子模式） |
-| 插件管理 | `backend/plugin_manager.py` | 插件发现/加载/钩子调度 | 规划 |
+### 3.3 关键设计决策
 
-**规则**：L3 模块之间可横向调用（如 context_manager 调 memory_retriever），但不得依赖 L4/L5。
+1. **人格用 yaml 编译，不写死在代码**；代码只提供事实、关系和格式约束。
+2. **记忆分“你与我”和“世界”**：私人情景/语义记忆与世界设定 RAG 使用独立 collection，避免混检索。
+3. **关系等级双计数**：`direct_count` 决定等级，`msg_count` 只表示“群里见过”；避免群聊刷屏升级。
+4. **群聊先门禁、后状态机**：`GroupGate` 当前是正式决策；`GroupStateMachine` 只 shadow 记录排队/合并/冷却，验证后再切 active。
+5. **模型调试可追踪**：每次对话的完整 messages、原始输出、参数、错误落盘，供提示词迭代。
+6. **回复格式交给代码**：模型只产出内容，清洗、字数、气泡、`[SILENT]` 由 `reply_format` / `orchestrator` 处理。
 
-### L4 编排层
+### 3.4 数据资产
 
-| 模块 | 路径 | 职责 | 状态 |
-|---|---|---|---|
-| 对话编排 | `backend/orchestrator.py` | 一次完整对话：建上下文→调模型→归档→返回 | 已有 |
-
-**规则**：L4 是唯一知道"一次对话从头到尾怎么走"的地方。L5 接入层只调 orchestrator，不自己拼流程。
-
-### L5 接入层
-
-| 模块 | 路径 | 职责 | 状态 |
-|---|---|---|---|
-| QQ 适配 | `adapters/qq_bot/` | NapCat OneBot 协议对接 | 已有 |
-| 管理控制台 | `desktop/` | PySide6 桌面端，人格/记忆/关系/模型/账号/API 管理 | 已有 |
-| CLI | `adapters/cli/`（待建） | 命令行测试入口 | 规划 |
-| Web UI | 已移除 | — | 已删除 |
-
-**规则**：每个接入端独立目录，共享 L4 的 orchestrator。接入层只做协议转换，不写业务。
-
----
-
-## 5. 核心数据流
-
-### 一次对话（L4 视角）
-用户消息↓[视觉预处理] 若含图片 → vision_pipeline 生成描述 → 拼入文本↓[上下文构建] context_manager.prepare_context()├─ 短期：最近 N 条├─ 长期：memory_retriever.search() 检索 Top-K└─ 人格：persona_engine 注入设定↓[模型推理] ollama_client.chat() → 模型输出↓[后处理] 表情标记替换、多气泡拆分↓[归档] memory_retriever.add_memory()↓返回给接入层发送
-上下文构建同时读取 `relationship` 的等级，把【关系】段下沉到本轮 user 尾部（见 5.7）。
-### 多用户记忆隔离
-
-- **session_id 规则**：Web UI 用固定 session；QQ 私聊用 `user_id`；QQ 群聊用 `group_id:user_id`
-- `context_manager` 和 `memory_retriever` 的所有读写都必须带 `session_id`
-- ChromaDB 的 metadata 存 `session_id`，检索时可按 session 过滤
-
----
-
-## 5.5 知识库设计
-
-Shelwell 的“知识”分两层，与对话记忆完全隔离。
-
-| 层 | 载体 | 内容 | 注入方式 |
-|---|---|---|---|
-| 短期：事实清单 | `config/persona_prompts/shelwell_facts.yaml` | 她熟悉的事物：游戏/动漫/成都生活细节 | 编译进系统提示词，常驻 |
-| 长期：RAG 知识库 | ChromaDB `shelwell_knowledge` collection | 结构化知识条目（作品、地点、概念） | 按 query 检索 Top-K 注入 |
-
-### 短期方案（先做）
-
-在 persona yaml 旁边新增 `shelwell_facts.yaml`，列她“确实了解”的事物，例如游戏（明日方舟主练能天使）、动漫（心理测量者、攻壳机动队）、成都生活（南门鸡公煲、人民公园喝茶）。
-
-`PersonaEngine` 读取后编译成【你熟悉的事】段落追加进提示词。目的不是让模型变博学，而是让它在自己的人设领域里有话可说，不瞎编。
-
-### 长期方案（后做）
-
-`backend/knowledge_base.py`（L3）：
-- 独立 ChromaDB collection `shelwell_knowledge`，与对话记忆 `shelwell_episodic` / `shelwell_semantic` 隔离
-- 数据源：手工整理的 Markdown/YAML 条目，`scripts/ingest_knowledge.py` 批量入库
-- 检索接口 `search(query, top_k)`，`ContextManager` 在记忆检索之后追加一次知识检索
-- 元数据含 `category`（game/anime/place/concept），可按场景过滤
-
-**边界**：知识库只补事实，不改人格。人格永远来自 `shelwell_persona.yaml` + LoRA。
-
----
-## 5.6 管理控制台（Shelwell Console，桌面版）
-
-**定位**：`desktop/` 是**本地管理工具**，不是聊天界面。所有对话统一走 QQ（`adapters/qq_bot`），控制台只负责配置、切换、监控、内容管理。
-
-技术栈：PySide6 6.8.x + PyInstaller（onedir）。零端口、无内嵌浏览器、可打包分发。
-
-### 导航结构
-
-| 页 | 职责 |
-|---|---|
-| 首页 | 一键启动全部服务、服务/容器/端口状态总览、日志查看、单项重启 |
-| 人格管理 | persona 切换、facts 切换、LoRA 挂载、新建/删除人格、模板示例 |
-| 记忆管理 | 情景/语义记忆查看、搜索、单条删除、清空、提炼设置；情景记忆双击编辑（已提炼只读） |
-| 关系 | 查看发言人 5 级关系、设置唯一“依赖”对象、清除单条记录 |
-| 模型切换 | Ollama 对话模型列表（过滤嵌入模型）、生成参数 |
-| 插件管理 | 占位，待 `docs/plugin-spec.md` |
-| QQ 账号 | NapCat WebUI 入口、Token 提取（持久化优先）、容器重启 |
-| API 接入 | 服务商预设、模型下拉、推理强度、图片开关、上下文配置、连通测试、用量统计 |
-
-### 分层
-desktop/main.py        主窗口 + 首页（HomePage）desktop/worker.py      后台任务（线程池 + 信号），UI 不阻塞desktop/services.py    业务逻辑层，无 UI 依赖，复用 backenddesktop/pages/*.py     各功能页
-**约束**：
-- UI 层不写业务逻辑，全部经 `services.py`
-- 所有阻塞调用（PowerShell / HTTP）必须走 `run_async`
-- 新增页面：`pages/` 下建模块 + `main.py` 的 `PAGES` 和堆栈同步
-
-### 打包
-
-- spec：`desktop/ShelwellConsole.spec`，onedir 模式
-- 体积约 278MB（含 chromadb + numpy 依赖，换 embedding 模型后必要开销）
-- **必须显式收集**：Anaconda 的 `libssl-3-x64.dll` / `libcrypto-3-x64.dll`（`_ssl.pyd` 依赖，不在默认搜索路径）、`certifi/cacert.pem`
-- runtime hook `desktop/runtime_hook_ssl.py` 在冻结环境设置 `SSL_CERT_FILE`
-- 项目根定位：`sys.frozen` 时从 exe 目录向上查找含 `config/app_config.yaml` 的目录
-
-### 已移除
-
-- Web 版控制台（`app/console.py`）
-- 内嵌浏览器页（曾为 QtWebEngine，占 289MB，无实际用途）
-
----
-
-## 5.7 关系等级（确定性判定）
-
-**定位**：关系等级是**代码能力**，不是模型推断。模型只执行判定结果，无权升降。
-
-### 数据与计数
-
-- 实现：`backend/relationship.py`（L3），SQLite `memory/index/relationships.sqlite3`
-- 每次归档一条消息（`MemoryService.add_memory`）就 `observe()`：消息数 +1，首次出现时间取最早
-- 首次建库从 JSONL 归档回填一次（`ensure_backfill`），升级/重启不会把老朋友当陌生人
-- 关系按 `speaker_id` 跨私聊/群聊聚合；`session_id` 仍负责对话隔离
-
-### 等级规则
-
-| 等级 | 进入条件（两个维度都满足） | 备注 |
+| 数据 | 位置 | 作用 |
 |---|---|---|
-| 陌生 | 条数 ≤ 50 或 时长 ≤ 120 小时（5 天） | 任一维度不达标即陌生 |
-| 认识 | 条数 > 50 且 时长 > 120 小时 | |
-| 了解 | 条数 > 300 且 时长 > 360 小时（15 天） | |
-| 信任 | 条数 > 1000 且 时长 > 1080 小时（45 天） | |
-| 依赖 | 条数 > 3000 且 时长 > 2160 小时（90 天） | 且为唯一指定对象 |
+| 情景记忆 | `memory/history/*.jsonl` | 对话真相源，可编辑/删除 |
+| 向量索引 | `memory/vector_store/chroma_db/` | 情景/语义/知识向量，可重建 |
+| FTS 索引 | `memory/index/memory_fts.sqlite3` | 关键词召回，可重建 |
+| 语义事实 | `memory/index/semantic.sqlite3` | 稳定事实，从情景提炼 |
+| 关系等级 | `memory/index/relationships.sqlite3` | 5 级状态与直接互动计数 |
+| 知识库 | `memory/vector_store/chroma_db/` collection `shelwell_knowledge` | 世界设定 RAG |
+| 群聊 trace | `logs/group_gate.jsonl` / `logs/group_state.jsonl` | 门禁与状态机实验数据 |
+| 模型 trace | `logs/llm_trace/` | 输入/输出/错误，提示词调试 |
 
-- 每个维度各自套档，最终取**较低**的档（短板决定关系）；因此 1001 条但只有 1 天仍是「陌生」，认识半年但只有 10 条也仍是「陌生」
-- 信任/依赖因此天然要求两个维度同时达标；只满足一边时由低的一边决定等级
-- 依赖：两个维度同时达标，且 `speaker_id == runtime.relationship.dependent_id`（全局限 1 人）；未指定的对象最高只到「信任」
+## 4. 文档索引：从整体到细节
 
-### 注入与开关
-
-- `ContextManager` 把 `【关系｜系统判定，勿自行升降】…` 下沉到本轮 user 尾部，system 保持字节级稳定
-- 内容：当前说话人 / 认识时长 / 聊过条数 / 等级 / 傲娇·毒舌·玩梗开关
-- 开关矩阵：私聊「信任/依赖」= 允许；群聊仅「依赖」= 允许；陌生/认识/了解一律禁止
-- 人格 yaml 的 `social_modes` 描述五级具体态度；代码只给等级与开关
-- 模型复述等级/条数视为提示词泄漏，`orchestrator` 按污染过滤
-
-### 边界
-
-- 关系等级只影响“能不能傲娇/毒舌/玩梗”，不改记忆检索、知识库、接话门禁
-- 清空全部记忆时一并清除关系记录（依赖对象设置保留）
-
----
-
-## 5.8 模型沉默（0 输出）
-
-**定位**：模型有权判断“这一刻不回应”，但 QQ 不能发空消息，所以由代码代发旁白。
-
-- 提示词：`OUTPUT_FORMAT` 的【沉默】段要求模型只输出 `[SILENT]`；被 @/点名/直接提问时要求尽量回应
-- 判定：`orchestrator.is_silent_reply()` 识别空输出、`[SILENT]`、`【SILENT】`、`<SILENT>` 及标点变体
-- 结果：返回 `{"silent": True, "bubbles": [旁白]}`，旁白取自 `reply.silent_hint`
-- 记忆：旁白不是她的回复，不写入 AI 侧；用户消息仍归档（`ai_msg=""`，关系计数保留）
-- 适配层：不把旁白写进对话历史；门禁不把旁白记成“她发言”，也不消耗接话冷却
-- 正常回复里误带的 `[SILENT]` 会被 `strip_silent_marker()` 清掉
-
----
-
-## 5.9 情景记忆编辑
-
-- 控制台记忆页双击情景条目 → 弹窗修改“用户消息 / AI 回复”
-- 后端 `MemoryService.update_event()` 重写 JSONL 并重建向量 + FTS 索引
-- `consolidated=True`（已被语义提炼）的条目只允许删除，修改请求会被拒绝
-- 关系计数不受编辑影响（仍按归档条数计算）
-
----
-
-## 6. 配置规范
-
-`config/app_config.yaml` 现有字段：
-
-| 路径 | 含义 |
-|---|---|
-| `model.base` | 基座模型名 |
-| `model.persona` | 挂载 LoRA 后的人格模型名 |
-| `model.embedding` | 嵌入模型名 |
-| `ollama.url` / `chat_timeout` / `embedding_timeout` | Ollama 服务 |
-| `generation.temperature` / `num_predict` / `num_ctx` / `think` | 推理参数 |
-| `context.max_length` / `memory_enabled` | 上下文 |
-| `memory.top_k` / `min_similarity` / `collection_name` | 记忆检索（"你与我"：私密/动态/关系） |
-| `knowledge.enabled` / `collection_name` / `top_k` / `min_similarity` / `path` | 世界档案 RAG（"世界"：公有/静态/事实），独立 collection |
-| `relationship.enabled` / `db_path` / `thresholds.*` | 关系等级：5 级阈值（条数/小时），SQLite 路径 |
-| `reply.max_chars_per_bubble` / `max_bubbles` / `single_bubble_max_chars` / `silent_hint` | 回复气泡拆分；`silent_hint` 是模型选择沉默时代发的旁白 |
-| `vision.enabled` / `model` / `max_side` / `max_bytes` / `max_images` / `max_per_minute` / `cache_path` | 图片识别：直连主模型、≤512 小图、指纹缓存、频率上限 |
-| `qq_bot.group_gate.*` | 群聊接话门禁：`mode`（active 正式决策 / shadow 只记录）、阈值、活跃/静默时段、冷却、称呼别名 |
-| `ui.*` | 界面 |
-
-`config/runtime.yaml`（运行期可变，控制台读写，与上面部署期配置分离）：
-
-| 路径 | 含义 |
-|---|---|
-| `active.persona` | 当前人格（persona_prompts 下的文件名） |
-| `active.lora` | 当前挂载的 LoRA 目录名，null 表示不挂载 |
-| `active.provider` | `ollama` 或 `openai_compatible` |
-| `active.model` | 当前模型名 |
-| `active.plugins` | 启用的插件列表 |
-| `providers.openai_compatible.*` | 远程 API 的 base_url / api_key / model |
-| `memory.extractor_model` | 语义提炼用模型；空串=跟随 `active.model`（bge-m3 是嵌入模型，不能提炼） |
-| `memory.auto_consolidate` | 每日自动提炼开关（bool） |
-| `memory.consolidate_time` | 自动提炼时间，本地时间 `HH:MM` |
-| `memory.consolidate_limit` | 单次自动提炼最多处理多少条情景记忆 |
-| `relationship.dependent_id` | 唯一可达“依赖”的对象（QQ 号）；空=无人，全局限 1 人 |
-| `relationship.dependent_name` | 仅用于控制台显示 |
-
-**新增配置规则**：
-- 按功能分组，不散落
-- 每个字段必须有注释说明单位/取值范围
-- 本文档第 6 节同步更新
-
----
-
-## 7. 编码与环境规范
-
-### Python 环境（重要）
-
-项目遵循“职责分离、环境内聚、可复现”原则。
-
-| 环境 | 路径 | Python | 用途 |
-|---|---|---|---|
-| **运行环境** | `E:\Shelwell\.venv` | 3.12.7 | 跑 streamlit、chromadb、后端服务。**唯一运行环境** |
-| **训练环境** | `C:\Users\<用户>\.unsloth\studio\unsloth_studio` | 3.12.7 | torch+ROCm+unsloth，由 Unsloth 官方安装器管理 |
-
-**规则**：
-- 运行一律用 `.venv`，通过 `start.bat` 激活，禁止用系统 Python 或 Anaconda base。
-- 训练环境**不纳入项目 venv 管理**，因为 `amd-torch-device-gfx1031` 等设备包只存在于 AMD 私有索引，项目内从零复刻不可行。`requirements-train.txt` 仅作环境快照记录。
-- 训练脚本调用时用训练环境的绝对路径 python。
-- 新增运行依赖：`pip install` 后执行 `pip freeze > requirements.txt` 锁版本。
-- 禁止把 venv 目录、模型、数据、日志纳入 git。
-
-### 编码约定
-
-- 文件编码 UTF-8，写文件时显式指定
-- 模块头必须有注释：`# 路径` + `# 职责`
-- 配置读取一律走 `config_loader.get()`，不直接读 yaml
-- 异常必须捕获并打印带模块前缀的日志：`print(f"[Memory] xxx失败: {e}")`
-- 新增依赖写入 `requirements.txt`
-
-### 命名约定
-
-- 模块：小写下划线 `memory_retriever.py`
-- 类：大驼峰 `MemoryRetriever`
-- 配置键：小写点分 `memory.top_k`
-- session_id：`web` / `qq:{user_id}` / `qqg:{group_id}:{user_id}`
-
----
-
-## 8. 扩展规则（新功能怎么加）
-
-新增一个功能时，按顺序回答：
-
-1. **属于哪一层？** 对照第 3 节分层表。
-2. **是否需要新配置？** 是 → 加到 `app_config.yaml` 对应分组，更新第 6 节。
-3. **是否需要新目录？** 只有 L5 接入端可以新增顶层目录 `adapters/<name>/`。L3/L4 新模块放 `backend/` 下。
-4. **是否影响数据流？** 是 → 更新第 5 节数据流图。
-5. **是否跨层调用？** 检查依赖方向是否自上而下。
-
-### 未来功能归位示例
-
-| 功能 | 层 | 位置 |
+| 层级 | 文档 | 内容 |
 |---|---|---|
-| QQ 接入 | L5 | `adapters/qq_bot/` |
-| 图片理解 | L3 | `backend/vision_pipeline.py` |
-| 表情包图库 | L3 | `backend/sticker_manager.py` |
-| 场景切换 | L3 | `backend/scenario_manager.py` |
-| LoRA 热切换 | L2 | `backend/llm/lora_loader.py` |
-| 多模型路由 | L2 | `backend/llm/router.py` |
-| 语音输入 | L5 | `adapters/voice/` |
-| 管理控制台 | L5 | `desktop/` |
-| 知识库 RAG | L3 | `backend/knowledge_base.py` |
-| 插件系统 | L3 | `backend/plugin_manager.py` |
-| 远程 API 接入 | L2 | `backend/llm/provider.py` |
+| 全局 | 本文件 | 定位、分层、主链路、待办 |
+| 索引 | [文件树.md](文件树.md) | 二级文件夹 + 每个文件的功能备注 |
+| 后端总览 | [backend/README.md](backend/README.md) | L3/L4 模块、接口、数据流、约束 |
+| 模型层 | [backend/llm/README.md](backend/llm/README.md) | Provider 接口、参数、错误、trace、usage |
+| 记忆系统 | [backend/memory/README.md](backend/memory/README.md) | 归档/索引/语义/巩固/遗忘、数据路径 |
+| 梗百科 | [backend/memewiki/README.md](backend/memewiki/README.md) | 梗匹配、注入、存储 |
+| 接入层 | [adapters/README.md](adapters/README.md) | L5 规则 |
+| QQ 接入 | [adapters/qq_bot/README.md](adapters/qq_bot/README.md) | OneBot、门禁、状态机、群聊配置 |
+| 控制台 | [desktop/README.md](desktop/README.md) | 页面、services、worker、打包 |
+| 配置 | [config/README.md](config/README.md) | app_config / runtime / persona / 知识 |
+| 人格素材 | [config/persona_prompts/README.md](config/persona_prompts/README.md) | 人格、facts、知识源编辑与入库 |
+| 脚本与测试 | [scripts/README.md](scripts/README.md) | 工具、测试清单、运行方式 |
+| 跨模块文档 | [docs/README.md](docs/README.md) | 记忆设计、实现评审、规范、部署 |
 
----
+**推荐阅读顺序**：本文件 → 文件树 → `backend/README.md` → 你正在改的模块 README → `docs/` 深文档。
 
-## 8.5 部署与运维（Windows 服务化）
+## 5. 待办清单（摘要）
 
-Shelwell 常驻运行由 Windows 服务托管，不依赖终端窗口。
+完整需求池见 [待办清单.txt](待办清单.txt)。当前优先级：
 
-| 组件 | 托管方式 | 自启 | 崩溃恢复 |
-|---|---|---|---|
-| Ollama | Windows 服务 `ShelwellOllama`（NSSM） | 自动 | NSSM 5 秒后重启 |
-| QQ 适配层 | Windows 服务 `ShelwellQQBot`（NSSM） | 自动 | NSSM 5 秒后重启 |
-| NapCat | Docker 容器 `napcat`，`--restart=always` | Docker Desktop 自启 | 进程崩溃自动重启 |
-| Docker Desktop | 用户登录自启 | 是 | — |
+**P0：稳定性**
+- 修复控制台 API 页上下文占用布局
+- 模型预设名重新调研并更新
+- 让 `test_*` 在 CI/本地一键跑全量
 
-**启动脚本**：`scripts/start_all.ps1` 只做“检查并拉起”，不常驻。首次部署、手动恢复时运行。
+**P1：人格与记忆**
+- 提示词继续瘦身，按“人格/事实/关系/格式”分层
+- 语义记忆定时巩固（每日/空闲）
+- 关系与状态机 shadow 数据复盘后，再决定是否切 active
 
-**Ollama 服务环境变量**（决定显存/上下文能力，改完需重启服务）：
+**P2：功能扩展**
+- 主动找人聊天（群聊 @ 某人）
+- 离线生活模拟（实验）：闲置时生成有因果闭环的生活日志，先不进入事实记忆
+- 插件规范（`docs/plugin-spec.md`）
+- LoRA 挂载与人格切换
+- 长期知识库入库流程产品化
 
-| 变量 | 值 | 作用 |
-|---|---|---|
-| `OLLAMA_MODELS` | `E:\Shelwell\Ollama_models` | 模型目录 |
-| `OLLAMA_MAX_LOADED_MODELS` | `2` | 同时驻留的模型数 |
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | KV 缓存 8bit 量化，显存减半（长上下文关键） |
-| `OLLAMA_FLASH_ATTENTION` | `1` | 量化 KV 的前提，并降低长上下文开销 |
+## 6. 文档维护规则
 
-写入方式：管理员运行 `scripts/set_ollama_env.ps1`（保留已有变量、只覆盖上面两项，并重启服务）。
-
-**上下文与缓存**：`num_ctx=65536`、`keep_alive=4h`（避免冷加载）。动态记忆/群上下文注入在本轮 user 消息，
-system 与历史前缀保持不变，Ollama 前缀缓存才能命中（否则每轮全量重算）。
-
-**日志位置**：
-- `logs/launcher.log` — 启动脚本
-- `logs/ollama.log` / `logs/ollama.err.log` — Ollama 服务
-- `logs/qq_bot.log` / `logs/qq_bot.err.log` — QQ 适配层
-
-**服务管理命令**：sc query ShelwellOllamasc query ShelwellQQBotnssm restart ShelwellQQBot
-**掉线处理（重要）**：
-- 进程崩溃 → NSSM 或 Docker 自动恢复，无需干预。
-- **QQ 被腾讯风控踢下线 → 无自动恢复手段，必须在 NapCat WebUI（`http://127.0.0.1:6099/webui`）重新扫码**。这是协议端方案的固有限制，不是配置问题。
-
-## 9. 红线
-
-- 禁止 L5 接入层直接调 L2/L1
-- 禁止 L3 能力层 import L4/L5
-- 禁止绕过 `config_loader` 直接读配置文件
-- 禁止在业务代码里硬编码模型名、路径、URL
-- 禁止把 `memory/`、`logs/`、`models/` 纳入版本控制（已在 `.gitignore`）
-- 禁止同一功能出现两套实现（重构时删旧留新）
-- 人格一致性以 `config/persona_prompts/shelwell_persona.yaml` 为唯一真相源，代码不得硬编码人格描述
-
----
-
-## 10. 当前待办（按优先级）
-
-已完成：
-- [x] 环境重构：`.venv`（3.12.7），依赖锁版本
-- [x] L4 编排层 `orchestrator.py`
-- [x] L5 QQ 接入 `adapters/qq_bot`，NapCat 反向 WS
-- [x] L3 人格引擎 `persona_engine.py`，yaml + facts 驱动
-- [x] L2 模型层 `provider.py`（Ollama / OpenAI 兼容）、`usage.py`
-- [x] 运行期配置 `runtime_config.py` + `config/runtime.yaml`（含密钥，已 gitignore）
-- [x] 桌面控制台 `desktop/`，PySide6 + PyInstaller，114MB
-- [x] 服务化部署：NSSM 三服务 + Docker 自启
-- [x] 短期知识：`shelwell_facts.yaml`
-- [x] 语义记忆：`semantic.py` + `extractor.py` + `consolidator.py`，情景→语义提炼
-- [x] 权重与遗忘：`forgetting.py`，三层权重（基础分+命中回补-时间衰减），只归档不删除
-- [x] 群聊支持：触发词、引用回复、群上下文注入、多用户归属隔离
-- [x] 提示词瘦身：OUTPUT_FORMAT 从 1100 字精简到约 500 字，清洗逻辑脚本化
-- [x] 嵌入模型升级：nomic → bge-m3（1024 维，中文语义更强）
-- [x] 关系等级：5 级确定性判定（条数+时长），SQLite 持久化，群聊/私聊权限矩阵
-- [x] 控制台“关系”页：查看等级、设置唯一依赖对象、清除记录
-- [x] 角色改名：西尔维娅·谢尔韦尔（Sylvia Shelwell）/ 触发词 西尔维娅·西儿·小西·维娅
-- [x] 模型沉默：0 输出 / [SILENT] → QQ 只发括号旁白，不进 AI 记忆
-- [x] 情景记忆编辑：控制台双击修改；已提炼条目只读，只能删除
-
-待办：
-1. **API 预设模型名**：各家模型名已过时，需重新调研后更新 `API_PRESETS`
-2. **聊天记录管理**：暂存 → 逐条审核 → 清除/归档/入记忆库
-3. **API 页上下文占用布局**：进度条与标签排版仍异常
-4. **插件规范**：研究 deepseek-harness，产出 `docs/plugin-spec.md`
-5. **长期知识库**：`knowledge_base.py` + 入库脚本
-6. **LoRA 挂载**：`lora_loader.py`，等训练产出
-7. **主动找人聊天**：群聊 @ 某人的功能，依赖主动触发机制
-8. **语义记忆自动巩固**：当前仅手动，需加定时任务（每日/休眠时）
+- **本文件只写全局**：新增参数、接口、字段、实现细节，写到对应文件夹 `README.md`，不往这里堆。
+- **新增/删除文件**：同步更新 [文件树.md](文件树.md) 的功能备注。
+- **新增模块**：在模块根目录建 `README.md`；如果是新的一级/二级目录，同时更新文件树和本文件的文档索引。
+- **跨模块设计**：放 `docs/`，由 `docs/README.md` 索引；模块 README 只链接，不复制。
+- **过时内容**：优先删/改原文档，不在架构文档留“历史版本”。

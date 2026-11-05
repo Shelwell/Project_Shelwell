@@ -4,8 +4,9 @@
 # 设计约束（2026-11-05）：
 #   1. 等级只由代码按「聊天条数 + 认识时长」计算，模型不得自行推断或升格
 #   2. 会话里第一次出现的人，从「陌生」开始；关系随真实互动累积，重启不丢
-#   3. 条数、时长各自套档后取较低档（短板决定关系）；「信任」要求两者同时
-#      超过阈值，「依赖」还必须是唯一指定对象
+#   3. 等级按「直接互动条数 + 认识时长」阶梯判定：24h+1 条直聊进「认识」，
+#      300/120h→了解，1000/360h→信任，3000/1080h+指定对象→依赖
+#      群聊旁观只计入 exposure，不参与等级
 #   4. 数据存 SQLite（memory/index/relationships.sqlite3），JSONL 归档仍是真相源，
 #      首次建库时从归档回填，避免升级后老朋友被当成陌生人
 
@@ -33,21 +34,23 @@ LEVEL_CN = {
 }
 LEVEL_INDEX = {k: i for i, k in enumerate(LEVELS)}
 
-# 默认阈值：条数（条）/ 时间（小时）
+# 默认阈值：x=直接互动条数（私聊/@/回复/点名/门禁接话），y=认识小时数
+# 阶梯：24h+1 条直聊进「认识」；之后 300/120h → 了解，1000/360h → 信任，
+# 3000/1080h + 指定对象 → 依赖。群聊旁观只算 exposure，不进等级。
 DEFAULT_THRESHOLDS = {
-    "stranger_max_msgs": 50,
-    "stranger_max_hours": 120,      # 5 天
-    "acquaint_max_msgs": 300,
-    "acquaint_max_hours": 360,      # 15 天
-    "known_max_msgs": 1000,
-    "known_max_hours": 1080,        # 45 天；超过即进入「信任」档
-    "depend_min_msgs": 3000,
-    "depend_min_hours": 2160,       # 90 天
+    "stranger_max_msgs": 0,         # 陌生：0 条直聊，或认识不足 24h
+    "stranger_max_hours": 24,
+    "acquaint_max_msgs": 300,       # 认识：>0 且 >24h；300 且 120h 进了解
+    "acquaint_max_hours": 120,      # 5 天
+    "known_max_msgs": 1000,         # 了解：1000 且 360h 进信任
+    "known_max_hours": 360,         # 15 天
+    "depend_min_msgs": 3000,        # 依赖：3000 条 + 1080h + 唯一指定对象
+    "depend_min_hours": 1080,       # 45 天；非指定对象最高到信任
 }
 
 # 每级允许的态度（控制台展示用，真正的措辞在 persona yaml）
 LEVEL_ATTITUDE = {
-    "stranger": "客气、简短、保持距离；不傲娇、不毒舌、不玩梗",
+    "stranger": "初识：观察、怕生、回答简短但不冷漠；不傲娇、不毒舌、不玩梗",
     "acquaintance": "放松一些，可以正常闲聊；仍不傲娇、不毒舌、不玩梗",
     "known": "朋友口吻，可以轻松开玩笑但不损人；不傲娇、不毒舌、不玩梗",
     "trust": "私聊可傲娇、毒舌、玩梗；群聊仍收着",
@@ -114,51 +117,36 @@ def _later(a: str, b: str) -> str:
     return a if str(a) >= str(b) else b
 
 
-def _tier_by_msgs(count: int, t: dict) -> int:
-    if count > int(t["depend_min_msgs"]):
-        return 4
-    if count > int(t["known_max_msgs"]):
-        return 3
-    if count > int(t["acquaint_max_msgs"]):
-        return 2
-    if count > int(t["stranger_max_msgs"]):
-        return 1
-    return 0
-
-
-def _tier_by_hours(hours: float, t: dict) -> int:
-    if hours > int(t["depend_min_hours"]):
-        return 4
-    if hours > int(t["known_max_hours"]):
-        return 3
-    if hours > int(t["acquaint_max_hours"]):
-        return 2
-    if hours > int(t["stranger_max_hours"]):
-        return 1
-    return 0
-
-
-def compute_level(msg_count: int, hours: float, is_dependent: bool = False,
+def compute_level(direct_count: int, hours: float, is_dependent: bool = False,
                   thresholds: dict = None) -> str:
     """
     计算关系等级（纯函数，便于测试）。
 
-    规则：
-      - 条数、时长各自套档，最终取**较低**的那一档（短板决定关系）
-      - 因此「信任」要求条数、时长同时超过阈值；只满足一边时由低的一边决定
-      - 「依赖」要求两个维度都超过 depend 阈值，且必须是唯一指定的对象
-      - 未指定的对象最高只能到「信任」，不会出现「依赖」
+    规则（x=直接互动条数，y=认识小时数）：
+      1 陌生：x=0，或 y<24h
+      2 认识：x>=1 且 y>=24h，直到 300 条 / 120h
+      3 了解：x>=300 且 y>=120h，直到 1000 条 / 360h
+      4 信任：x>=1000 且 y>=360h，直到 3000 条 / 1080h
+      5 依赖：x>=3000 且 y>=1080h，且必须是唯一指定对象
+    非指定对象即使超过 3000/1080，也停在 4 级信任。
+    群聊旁观只记 exposure，不参与这里。
     """
     t = dict(DEFAULT_THRESHOLDS)
     if thresholds:
         t.update(thresholds)
-    count = max(0, int(msg_count or 0))
-    hours = max(0.0, float(hours or 0.0))
+    x = max(0, int(direct_count or 0))
+    y = max(0.0, float(hours or 0.0))
 
-    tier = min(_tier_by_msgs(count, t), _tier_by_hours(hours, t))
-    if tier == 4 and not is_dependent:
-        tier = 3
-    return LEVELS[tier]
+    if is_dependent and x >= int(t["depend_min_msgs"]) \
+            and y >= int(t["depend_min_hours"]):
+        return "dependent"
+    if x >= int(t["known_max_msgs"]) and y >= int(t["known_max_hours"]):
+        return "trust"
+    if x >= int(t["acquaint_max_msgs"]) and y >= int(t["acquaint_max_hours"]):
+        return "known"
+    if x > int(t["stranger_max_msgs"]) and y >= int(t["stranger_max_hours"]):
+        return "acquaintance"
+    return "stranger"
 
 
 def human_hours(hours: float) -> str:
@@ -194,7 +182,8 @@ class Relationship:
     display_name: str = ""
     first_seen: str = ""
     last_seen: str = ""
-    msg_count: int = 0
+    msg_count: int = 0        # 群里见过的全部消息（exposure）
+    direct_count: int = 0     # 真正与她有关的消息（决定等级）
     at_count: int = 0
     reply_count: int = 0
     channel_type: str = ""
@@ -218,6 +207,7 @@ class Relationship:
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
             "msg_count": self.msg_count,
+            "direct_count": self.direct_count,
             "at_count": self.at_count,
             "reply_count": self.reply_count,
             "channel_type": self.channel_type,
@@ -286,6 +276,7 @@ class RelationshipStore:
                     first_seen   TEXT NOT NULL,
                     last_seen    TEXT NOT NULL,
                     msg_count    INTEGER NOT NULL DEFAULT 0,
+                    direct_count INTEGER NOT NULL DEFAULT 0,
                     at_count     INTEGER NOT NULL DEFAULT 0,
                     reply_count  INTEGER NOT NULL DEFAULT 0,
                     channel_type TEXT NOT NULL DEFAULT '',
@@ -299,6 +290,16 @@ class RelationshipStore:
                     value TEXT NOT NULL DEFAULT ''
                 )
             """)
+            # 旧库迁移：新增 direct_count；历史私聊按直接互动计，群聊保守置 0
+            cols = {r["name"] for r in con.execute(
+                "PRAGMA table_info(relationships)").fetchall()}
+            if "direct_count" not in cols:
+                con.execute(
+                    "ALTER TABLE relationships ADD COLUMN "
+                    "direct_count INTEGER NOT NULL DEFAULT 0")
+                con.execute(
+                    "UPDATE relationships SET direct_count=msg_count "
+                    "WHERE channel_type='private'")
 
     def _meta(self, key: str) -> str:
         with self._db() as con:
@@ -335,8 +336,12 @@ class RelationshipStore:
     def observe(self, speaker_id: str, display_name: str = "",
                 channel_type: str = "", channel_id: str = "",
                 at_me: bool = False, reply_to_bot: bool = False,
-                ts=None) -> Optional[Relationship]:
-        """记录一条该发言人的消息（由 MemoryService 在归档时调用）"""
+                direct: bool = False, ts=None) -> Optional[Relationship]:
+        """记录一条该发言人的消息（由 MemoryService 在归档时调用）
+
+        msg_count = 群里见过的全部消息；direct_count = 真正与她有关的互动。
+        等级只看 direct_count。
+        """
         sid = str(speaker_id or "").strip()
         if not sid:
             return None
@@ -353,26 +358,28 @@ class RelationshipStore:
                         display_name = CASE WHEN ? <> '' THEN ? ELSE display_name END,
                         first_seen = ?, last_seen = ?,
                         msg_count = msg_count + 1,
+                        direct_count = direct_count + ?,
                         at_count = at_count + ?,
                         reply_count = reply_count + ?,
                         channel_type = CASE WHEN ? <> '' THEN ? ELSE channel_type END,
                         channel_id = CASE WHEN ? <> '' THEN ? ELSE channel_id END,
                         updated_at = ?
                     WHERE speaker_id = ?
-                """, (name, name, first, ts_iso, int(bool(at_me)),
-                      int(bool(reply_to_bot)), str(channel_type or ""),
-                      str(channel_type or ""), str(channel_id or ""),
-                      str(channel_id or ""), _to_iso(), sid))
+                """, (name, name, first, ts_iso, int(bool(direct)),
+                      int(bool(at_me)), int(bool(reply_to_bot)),
+                      str(channel_type or ""), str(channel_type or ""),
+                      str(channel_id or ""), str(channel_id or ""),
+                      _to_iso(), sid))
             else:
                 con.execute("""
                     INSERT INTO relationships
                         (speaker_id, display_name, first_seen, last_seen,
-                         msg_count, at_count, reply_count, channel_type,
-                         channel_id, updated_at)
-                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                """, (sid, name, ts_iso, ts_iso, int(bool(at_me)),
-                      int(bool(reply_to_bot)), str(channel_type or ""),
-                      str(channel_id or ""), _to_iso()))
+                         msg_count, direct_count, at_count, reply_count,
+                         channel_type, channel_id, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                """, (sid, name, ts_iso, ts_iso, int(bool(direct)),
+                      int(bool(at_me)), int(bool(reply_to_bot)),
+                      str(channel_type or ""), str(channel_id or ""), _to_iso()))
         return self.get(sid)
 
     def delete(self, speaker_id: str) -> bool:
@@ -397,6 +404,7 @@ class RelationshipStore:
                     display_name: str = "") -> Relationship:
         hours = _hours_since(row["first_seen"], now)
         count = int(row["msg_count"] or 0)
+        direct = int(row["direct_count"] or 0)
         dep = self.is_dependent(row["speaker_id"])
         return Relationship(
             speaker_id=str(row["speaker_id"]),
@@ -404,12 +412,13 @@ class RelationshipStore:
             first_seen=str(row["first_seen"] or ""),
             last_seen=str(row["last_seen"] or ""),
             msg_count=count,
+            direct_count=direct,
             at_count=int(row["at_count"] or 0),
             reply_count=int(row["reply_count"] or 0),
             channel_type=str(row["channel_type"] or ""),
             channel_id=str(row["channel_id"] or ""),
             hours=hours,
-            level=compute_level(count, hours, dep, self.thresholds),
+            level=compute_level(direct, hours, dep, self.thresholds),
             dependent=dep,
         )
 
@@ -425,7 +434,7 @@ class RelationshipStore:
             dep = self.is_dependent(sid)
             return Relationship(
                 speaker_id=sid, display_name=display_name or "",
-                hours=0.0, msg_count=0,
+                hours=0.0, msg_count=0, direct_count=0,
                 level=compute_level(0, 0.0, dep, self.thresholds),
                 dependent=dep)
         return self._row_to_rel(row, now=now, display_name=display_name)
@@ -435,11 +444,11 @@ class RelationshipStore:
         return rel.level if rel else "stranger"
 
     def all(self, now: datetime = None) -> list:
-        """列出所有记录，按等级从高到低、消息数从多到少排序"""
+        """列出所有记录，按等级从高到低、直接互动从多到少排序"""
         with self._db() as con:
             rows = con.execute("SELECT * FROM relationships").fetchall()
         out = [self._row_to_rel(r, now=now) for r in rows]
-        out.sort(key=lambda r: (LEVEL_INDEX.get(r.level, 0), r.msg_count,
+        out.sort(key=lambda r: (LEVEL_INDEX.get(r.level, 0), r.direct_count,
                                 r.last_seen), reverse=True)
         return out
 
@@ -447,9 +456,10 @@ class RelationshipStore:
         with self._db() as con:
             total = con.execute("SELECT COUNT(*) AS n FROM relationships").fetchone()["n"]
             rows = con.execute(
-                "SELECT msg_count FROM relationships").fetchall()
+                "SELECT msg_count, direct_count FROM relationships").fetchall()
         return {"total": int(total),
                 "messages": sum(int(r["msg_count"] or 0) for r in rows),
+                "direct_messages": sum(int(r["direct_count"] or 0) for r in rows),
                 "dependent_id": self.dependent_id()}
 
     # ---------- 一次性回填 ----------
@@ -480,15 +490,18 @@ class RelationshipStore:
                 if not ts:
                     continue
                 item = agg.get(sid)
+                direct = 1 if (getattr(ev, "channel_type", "") == "private"
+                               or getattr(ev, "ai_msg", "")) else 0
                 if item is None:
                     agg[sid] = {
-                        "count": 1, "first": ts, "last": ts,
+                        "count": 1, "direct": direct, "first": ts, "last": ts,
                         "name": getattr(ev, "speaker_name", "") or "",
                         "ct": getattr(ev, "channel_type", "") or "",
                         "ci": getattr(ev, "channel_id", "") or "",
                     }
                     continue
                 item["count"] += 1
+                item["direct"] += direct
                 item["first"] = _earlier(item["first"], ts)
                 last = _later(item["last"], ts)
                 if last != item["last"]:
@@ -507,11 +520,11 @@ class RelationshipStore:
                     con.execute("""
                         INSERT OR IGNORE INTO relationships
                             (speaker_id, display_name, first_seen, last_seen,
-                             msg_count, at_count, reply_count, channel_type,
-                             channel_id, updated_at)
-                        VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
-                    """, (sid, a["name"], a["first"], a["last"], a["count"],
-                          a["ct"], a["ci"], _to_iso()))
+                             msg_count, direct_count, at_count, reply_count,
+                             channel_type, channel_id, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+                    """, (sid, a["name"], a["first"], a["last"],
+                          a["count"], a["direct"], a["ct"], a["ci"], _to_iso()))
         self._set_meta("backfilled", "1")
         if agg:
             print("[Relationship] 已从归档回填 %d 位发言人" % len(agg))
@@ -526,10 +539,12 @@ def render_relationship_block(rel: Relationship, channel_type: str = "private") 
     name = str(rel.display or "对方").replace("\n", " ").replace("\r", " ").strip()[:24]
     if not name:
         name = "对方"
-    if rel.msg_count <= 0:
-        stats = "初次接触"
+    if rel.direct_count <= 0:
+        stats = ("认识 %s，还没直接聊过" % human_hours(rel.hours)
+                 if rel.hours > 0 else "初次接触")
     else:
-        stats = "认识 %s，聊过 %d 条" % (human_hours(rel.hours), rel.msg_count)
+        stats = "认识 %s，直接互动 %d 条" % (human_hours(rel.hours),
+                                             rel.direct_count)
     is_group = (channel_type == "group")
     allow, note = tsundere_policy(rel.level, is_group)
     return (

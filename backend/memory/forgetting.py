@@ -129,7 +129,14 @@ def format_injection(picked: list, template: dict = None) -> str:
     template = template or {}
     header = str(template.get("header", "")).format(count=len(picked))
     prefix = str(template.get("line_prefix", ""))
-    lines = [prefix + getattr(f, "fact", "") for f in picked]
+    lines = []
+    for f in picked:
+        text = getattr(f, "fact", "")
+        subject = str(getattr(f, "subject", "") or "").strip()
+        # 旧事实主语可能是用户昵称（甚至和角色英文名重名）；注入时统一成“对方”
+        if subject and text.startswith(subject):
+            text = "对方" + text[len(subject):]
+        lines.append(prefix + text)
     return "\n".join(part for part in (header, "\n".join(lines)) if part)
 
 

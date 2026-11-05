@@ -46,12 +46,13 @@ class MemoryRetriever:
 
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    speaker_id: str = "", channel_type: str = "",
-                   channel_id: str = "", speaker_name: str = ""):
+                   channel_id: str = "", speaker_name: str = "",
+                   direct: bool = None):
         """将一轮对话写入长期记忆（归档 + 同步索引）"""
         return self._svc.add_memory(
             user_msg, ai_msg, session_id=session_id,
             speaker_id=speaker_id, channel_type=channel_type, channel_id=channel_id,
-            speaker_name=speaker_name,
+            speaker_name=speaker_name, direct=direct,
         )
 
     def search(self, query: str, top_k: int = None, min_similarity: float = None,

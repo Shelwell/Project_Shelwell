@@ -66,7 +66,7 @@ class PersonaEngine:
 
         # ---- 身份 ----
         ident = d.get("identity", {})
-        name = ident.get("name", "西尔维娅·谢尔韦尔")
+        name = ident.get("name", "西尔维娅·希尔薇")
         nickname = ident.get("nickname")
         age = ident.get("age", "")
         gender = ident.get("gender", "")

@@ -1,6 +1,6 @@
 # Shelwell 记忆库设计
 
-> 状态：设计稿，待实现。本文档是记忆系统的唯一设计依据，实现时以本文档为准。
+> 状态：设计稿（已部分落地）。当前实现以 [../backend/memory/README.md](../backend/memory/README.md) 为准；本文解释“为什么这样分层”。
 > 前置：`backend/memory_retriever.py` 现状为「日志 + 向量检索」单层结构，本设计将其重构为仿生双层记忆。
 
 ---

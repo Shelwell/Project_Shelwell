@@ -22,10 +22,10 @@ def check(name, cond, detail=""):
 
 
 T = {
-    "stranger_max_msgs": 50, "stranger_max_hours": 120,
-    "acquaint_max_msgs": 300, "acquaint_max_hours": 360,
-    "known_max_msgs": 1000, "known_max_hours": 1080,
-    "depend_min_msgs": 3000, "depend_min_hours": 2160,
+    "stranger_max_msgs": 0, "stranger_max_hours": 24,
+    "acquaint_max_msgs": 300, "acquaint_max_hours": 120,
+    "known_max_msgs": 1000, "known_max_hours": 360,
+    "depend_min_msgs": 3000, "depend_min_hours": 1080,
 }
 
 from backend.relationship import (
@@ -37,26 +37,25 @@ from backend.relationship import (
 print("[1] 等级阈值")
 cases = [
     (0, 0, False, "stranger"),
-    (50, 120, False, "stranger"),
-    (51, 120, False, "stranger"),        # 条数够，时间仍是陌生档（短板）
-    (300, 120, False, "stranger"),
-    (301, 120, False, "stranger"),
-    (1000, 120, False, "stranger"),
-    (1001, 120, False, "stranger"),      # 条数再多，时间不够也是陌生
-    (50, 121, False, "stranger"),        # 时间够，条数不够也是陌生
-    (50, 1081, False, "stranger"),
-    (3001, 100, False, "stranger"),      # 刷屏但认识 4 天 → 陌生
-    (51, 121, False, "acquaintance"),
-    (300, 360, False, "acquaintance"),
-    (301, 361, False, "known"),
-    (1000, 1080, False, "known"),
-    (1001, 1080, False, "known"),        # 时间差 1 小时 → 了解
-    (1001, 1081, False, "trust"),        # 两个维度同时过线
-    (3001, 2161, False, "trust"),        # 全达标但未指定 → 最高信任
-    (3001, 2161, True, "dependent"),     # 全达标且被指定
-    (3000, 2161, True, "trust"),         # 条数没到 3001
-    (3001, 2160, True, "trust"),         # 时间没到 2161
-    (10, 5000, False, "stranger"),       # 认识半年但只有 10 条
+    (0, 1000, False, "stranger"),        # 只有旁观，没有直聊
+    (1, 1, False, "stranger"),           # 首日
+    (1, 23.9, False, "stranger"),        # 不到 24h
+    (1, 24, False, "acquaintance"),      # 24h + 1 条直聊
+    (1, 25, False, "acquaintance"),
+    (299, 25, False, "acquaintance"),
+    (299, 120, False, "acquaintance"),   # 差 1 条到了解
+    (300, 120, False, "known"),
+    (300, 119, False, "acquaintance"),   # 差 1 小时到了解
+    (999, 360, False, "known"),          # 差 1 条到信任
+    (1000, 360, False, "trust"),
+    (1000, 359, False, "known"),         # 差 1 小时到信任
+    (3000, 1080, False, "trust"),        # 未指定，最高信任
+    (4000, 1200, False, "trust"),        # 高段非指定，不再出现空档
+    (3000, 1080, True, "dependent"),
+    (4000, 1200, True, "dependent"),
+    (2999, 1080, True, "trust"),         # 条数差 1
+    (3000, 1079, True, "trust"),         # 时间差 1 小时
+    (1, 0, False, "stranger"),           # y=0
 ]
 for msgs, hours, dep, expected in cases:
     got = compute_level(msgs, hours, dep, T)
@@ -79,25 +78,27 @@ tmp = Path(tempfile.mkdtemp(prefix="shelwell_rel_"))
 store = RelationshipStore(db_path=str(tmp / "rel.sqlite3"),
                           dependent_id="1001", thresholds=T)
 t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-store.observe("1001", "小明", "private", "1001", ts=t0)
-store.observe("1001", "小明", "private", "1001", ts=t0 + timedelta(hours=1))
+store.observe("1001", "小明", "private", "1001", direct=True, ts=t0)
+store.observe("1001", "小明", "private", "1001", direct=True,
+              ts=t0 + timedelta(hours=1))
 r = store.get("1001", now=t0 + timedelta(hours=122))
 check("消息计数累加", r.msg_count == 2, r.msg_count)
+check("直接互动计数累加", r.direct_count == 2, r.direct_count)
 check("首次时间不被覆盖", r.first_seen.startswith("2026-01-01"), r.first_seen)
-check("时间够但条数不够 → 陌生", r.level == "stranger", r.level)
+check("2 条直聊 + 122 小时 → 认识", r.level == "acquaintance", r.level)
 check("显示名保存", r.display_name == "小明", r.display_name)
 
-# 补到 51 条：条数、时间都进「认识」档
-for _ in range(49):
-    store.observe("1001", "小明", "private", "1001", ts=t0)
+# 补到 300 条直聊：122 小时进入「了解」
+for _ in range(298):
+    store.observe("1001", "小明", "private", "1001", direct=True, ts=t0)
 r = store.get("1001", now=t0 + timedelta(hours=122))
-check("51 条 + 122 小时 → 认识", r.msg_count == 51 and r.level == "acquaintance",
-      f"{r.msg_count}/{r.level}")
+check("300 条直聊 + 122 小时 → 了解", r.direct_count == 300 and r.level == "known",
+      f"{r.direct_count}/{r.level}")
 
 store2 = RelationshipStore(db_path=str(tmp / "rel.sqlite3"),
                            dependent_id="1001", thresholds=T)
 r2 = store2.get("1001", now=t0 + timedelta(hours=122))
-check("重新打开后数据仍在", r2.msg_count == 51 and r2.display_name == "小明")
+check("重新打开后数据仍在", r2.direct_count == 300 and r2.display_name == "小明")
 check("唯一依赖对象生效", store2.is_dependent("1001") and not store2.is_dependent("1002"))
 
 # ---------- 4. 归档回填 ----------
@@ -115,15 +116,27 @@ for sid, name, n, ts in [("1001", "小明", 2, "2026-01-01T00:00:00+00:00"),
         ev.timestamp = ts
         arc.append(ev)
 
+# 群聊旁观（没有 AI 回复）：只算 exposure，不算 direct
+ev_group = MemoryEvent.create("qqg:9:1003", "群里闲聊", "", speaker_id="1003",
+                              channel_type="group", channel_id="9",
+                              speaker_name="小刚")
+ev_group.timestamp = "2026-01-05T00:00:00+00:00"
+arc.append(ev_group)
+
 store3 = RelationshipStore(db_path=str(tmp / "rel_backfill.sqlite3"),
                            dependent_id="1001", thresholds=T)
 n = store3.ensure_backfill(arc)
-check("回填人数", n == 2, n)
+check("回填人数", n == 3, n)
 rb = store3.get("1001", now=datetime(2026, 3, 1, tzinfo=timezone.utc))
 check("回填条数", rb.msg_count == 2, rb.msg_count)
+check("回填直接互动数", rb.direct_count == 2, rb.direct_count)
 check("回填首次时间", rb.first_seen.startswith("2026-01-01"), rb.first_seen)
 check("回填只跑一次", store3.ensure_backfill(arc) == 0)
-check("回填后等级按真实时间算（条数不够→陌生）", rb.level == "stranger", rb.level)
+check("回填后 2 条直聊 → 认识", rb.level == "acquaintance", rb.level)
+rg = store3.get("1003", now=datetime(2026, 3, 1, tzinfo=timezone.utc))
+check("群聊旁观不算直聊", rg.msg_count == 1 and rg.direct_count == 0,
+      (rg.msg_count, rg.direct_count))
+check("群聊旁观仍是陌生", rg.level == "stranger", rg.level)
 store3.clear_all()
 check("清空后不会被回填 resurrect", store3.ensure_backfill(arc) == 0)
 
@@ -132,12 +145,17 @@ print("\n[5] 注入渲染")
 unknown = Relationship(speaker_id="9", display_name="新朋友")
 line = render_relationship_block(unknown, "private")
 check("新人显示初次接触", "初次接触" in line and "等级：陌生" in line, line)
-trusted = Relationship(speaker_id="1001", display_name="小明", msg_count=1200,
-                       hours=1100, level="trust", first_seen="2026-01-01T00:00:00+00:00")
+seen = Relationship(speaker_id="8", display_name="群里见过", msg_count=100,
+                    direct_count=0, hours=50)
+check("见过但没直聊", "还没直接聊过" in render_relationship_block(seen, "group"))
+trusted = Relationship(speaker_id="1001", display_name="小明", msg_count=5000,
+                       direct_count=1200, hours=1100, level="trust",
+                       first_seen="2026-01-01T00:00:00+00:00")
 check("信任私聊渲染允许", "允许" in render_relationship_block(trusted, "private"))
 check("信任群聊渲染禁止", "禁止" in render_relationship_block(trusted, "group"))
-dependent = Relationship(speaker_id="1001", display_name="小明", msg_count=3200,
-                         hours=2200, level="dependent", dependent=True)
+dependent = Relationship(speaker_id="1001", display_name="小明", msg_count=6000,
+                         direct_count=3200, hours=2200, level="dependent",
+                         dependent=True)
 check("依赖群聊渲染允许", "群聊也可" in render_relationship_block(dependent, "group"))
 
 # ---------- 6. 上下文注入位置 ----------
@@ -148,7 +166,8 @@ from backend.context_manager import ContextManager
 class StubRelStore:
     def get(self, sid, display_name=""):
         return Relationship(speaker_id=sid, display_name=display_name or "小明",
-                            msg_count=12, hours=6, level="stranger")
+                            msg_count=12, direct_count=12, hours=6,
+                            level="stranger")
 
 
 class StubMemory:
@@ -191,11 +210,16 @@ svc = MemoryService(auto_worker=False, archive_dir=str(tmp / "h2"),
 # 避免测试机没开 Ollama 时触发嵌入请求
 svc.indexer.index = lambda ev: {"vector": False, "lexical": True}
 svc.add_memory("hello", "hi", session_id="qqg:9:1001", speaker_id="1001",
-               channel_type="group", channel_id="9", speaker_name="小明")
+               channel_type="group", channel_id="9", speaker_name="小明",
+               direct=True)
 svc.add_memory("again", "hi", session_id="qqg:9:1001", speaker_id="1001",
                channel_type="group", channel_id="9", speaker_name="小明")
+svc.add_memory("private hi", "hi", session_id="qq:2", speaker_id="2",
+               channel_type="private", speaker_name="小红")
 rel = svc.relationship.get("1001")
 check("归档消息自动计数", rel.msg_count == 2, rel.msg_count)
+check("直接互动单独计数", rel.direct_count == 1, rel.direct_count)
+check("私聊默认算直接互动", svc.relationship.get("2").direct_count == 1)
 check("关系存储与 MemoryService 同源", svc.relationship.db_path.endswith("relationships.sqlite3"))
 svc.stop_worker()
 

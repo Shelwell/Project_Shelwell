@@ -60,7 +60,16 @@ check("只发旁白", r["bubbles"] == [DEFAULT_SILENT_HINT], r["bubbles"])
 check("旁白不归档为 AI 回复", ctx.archived and ctx.archived[-1]["ai_msg"] == "",
       ctx.archived)
 check("用户消息仍归档", ctx.archived[-1]["user_msg"] == "在吗")
+check("沉默归档标记为直接互动", ctx.archived[-1].get("direct") is True,
+      ctx.archived)
 
+
+
+print("\n[2.5] 上下文复述拦截")
+r, ctx = run("[关系｜系统判定，勿自行升降】当前说话人：小明｜等级：陌生"
+             "\n【群里刚才在聊】\n小明：在吗")
+check("复述不发送", r.get("silent") is True, r)
+check("复述不归档", not ctx.archived, ctx.archived)
 print("\n[3] 空输出")
 r, ctx = run("   ")
 check("空输出按沉默处理", r.get("silent") is True and r["bubbles"] == [DEFAULT_SILENT_HINT])

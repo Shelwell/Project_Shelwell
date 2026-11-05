@@ -27,6 +27,7 @@ from desktop.pages.qq_page import QQPage
 from desktop.pages.plugin_page import PluginPage
 from desktop.pages.memory_page import MemoryPage
 from desktop.pages.relationship_page import RelationshipPage
+from desktop.pages.trace_page import TracePage
 
 
 # ---------------- 管理员权限 ----------------
@@ -318,7 +319,8 @@ class HomePage(QWidget):
 
 # ---------------- 主窗口 ----------------
 
-PAGES = ["首页", "人格管理", "记忆管理", "关系", "模型切换", "插件管理", "QQ 账号", "API 接入"]
+PAGES = ["首页", "人格管理", "记忆管理", "关系", "模型切换", "调试",
+         "插件管理", "QQ 账号", "API 接入"]
 
 
 class MainWindow(QMainWindow):
@@ -351,12 +353,13 @@ class MainWindow(QMainWindow):
         self.memory_page = MemoryPage()
         self.relationship_page = RelationshipPage()
         self.model_page = ModelPage()
+        self.trace_page = TracePage()
         self.plugin_page = PluginPage()
         self.qq_page = QQPage()
         self.api_page = ApiPage()
         for w in (self.home_page, self.persona_page, self.memory_page,
-                  self.relationship_page, self.model_page, self.plugin_page,
-                  self.qq_page, self.api_page):
+                  self.relationship_page, self.model_page, self.trace_page,
+                  self.plugin_page, self.qq_page, self.api_page):
             self.stack.addWidget(w)
         layout.addWidget(self.stack, 1)
 
@@ -370,6 +373,8 @@ class MainWindow(QMainWindow):
             self.home_page.refresh()
         elif PAGES[idx] == "关系":
             self.relationship_page.reload()
+        elif PAGES[idx] == "调试":
+            self.trace_page.reload()
 
 
 def main():

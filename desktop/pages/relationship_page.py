@@ -21,7 +21,7 @@ LEVEL_COLORS = {
     "依赖": "#c03030",
 }
 
-HEADERS = ["昵称", "QQ", "等级", "消息数", "认识时长", "最后互动"]
+HEADERS = ["昵称", "QQ", "等级", "直接互动", "群内见过", "认识时长", "最后互动"]
 
 
 class RelationshipPage(QWidget):
@@ -111,13 +111,14 @@ class RelationshipPage(QWidget):
                 it.get("display_name") or "（未命名）",
                 str(it.get("speaker_id") or ""),
                 it.get("level_cn") or "",
+                str(it.get("direct_count", 0)),
                 str(it.get("msg_count", 0)),
                 it.get("hours_text") or "",
                 self._fmt_time(it.get("last_seen") or ""),
             ]
             for col, text in enumerate(values):
                 cell = QTableWidgetItem(text)
-                if col in (1, 3, 4):
+                if col in (1, 3, 4, 5):
                     cell.setTextAlignment(Qt.AlignCenter)
                 if col == 2:
                     cell.setToolTip(it.get("attitude") or "")
@@ -152,23 +153,21 @@ class RelationshipPage(QWidget):
                 return default
 
         return (
-            "等级取条数与认识时长的较低档（短板），两个维度都达标才进入该档：\n"
-            "陌生：≤%d 条 或 ≤%d 小时（%d 天）\n"
-            "认识：>%d 条 且 >%d 小时（%d 天）\n"
-            "了解：>%d 条 且 >%d 小时（%d 天）\n"
-            "信任：>%d 条 且 >%d 小时（%d 天）\n"
-            "依赖：>%d 条 且 >%d 小时（%d 天），且被设为依赖对象（全局限 1 人）\n"
+            "等级只看直接互动（私聊/@/回复/点名/门禁接话），群内见过只作“眼熟”参考：\n"
+            "陌生：0 条直聊，或认识不足 %d 小时\n"
+            "认识：≥1 条直聊且 ≥%d 小时（到 %d 条且 %d 小时进了解）\n"
+            "了解：≥%d 条直聊且 ≥%d 小时（到 %d 条且 %d 小时进信任）\n"
+            "信任：≥%d 条直聊且 ≥%d 小时（到 %d 条且 %d 小时可进依赖）\n"
+            "依赖：≥%d 条直聊且 ≥%d 小时，且被设为依赖对象（全局限 1 人）\n"
             "傲娇/毒舌/玩梗：私聊“信任/依赖”，群聊仅“依赖”。等级由代码按归档消息计算，模型无权升降。"
-            % (val("stranger_max_msgs"), val("stranger_max_hours"),
-               day(val("stranger_max_hours")),
-               val("stranger_max_msgs"), val("stranger_max_hours"),
-               day(val("stranger_max_hours")),
+            % (val("stranger_max_hours"),
+               val("stranger_max_hours"),
                val("acquaint_max_msgs"), val("acquaint_max_hours"),
-               day(val("acquaint_max_hours")),
+               val("acquaint_max_msgs"), val("acquaint_max_hours"),
                val("known_max_msgs"), val("known_max_hours"),
-               day(val("known_max_hours")),
+               val("known_max_msgs"), val("known_max_hours"),
                val("depend_min_msgs"), val("depend_min_hours"),
-               day(val("depend_min_hours")))
+               val("depend_min_msgs"), val("depend_min_hours"))
         )
 
     # ---------- 操作 ----------

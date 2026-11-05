@@ -2,7 +2,9 @@
 # 职责：桌面控制台的业务逻辑层（无 UI 依赖）
 # 所有函数为同步阻塞，调用方需放入线程池执行
 
+import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1049,3 +1051,98 @@ def restart_service(name: str) -> str:
 
 def restart_napcat() -> str:
     return run_ps("docker restart napcat", 90)
+
+
+# ---------- 模型调试 trace ----------
+
+def _trace_dir() -> Path:
+    raw = str(get("debug.trace_dir", "logs/llm_trace") or "logs/llm_trace")
+    p = Path(raw)
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def list_llm_traces(limit: int = 100, kind: str = "", session: str = "") -> dict:
+    """读取 trace index，返回最近的模型调用（新→旧）"""
+    try:
+        d = _trace_dir()
+        idx = d / "index.jsonl"
+        if not idx.exists():
+            return {"ok": True, "items": [], "trace_dir": str(d)}
+        lines = []
+        with open(idx, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if kind and rec.get("kind") != kind:
+                    continue
+                if session and session not in str(rec.get("session_id", "")):
+                    continue
+                lines.append(rec)
+        items = lines[-int(limit):]
+        items.reverse()
+        return {"ok": True, "items": items, "trace_dir": str(d)}
+    except Exception as e:
+        return {"ok": False, "items": [], "error": str(e)}
+
+
+def read_llm_trace(trace_id: str) -> dict:
+    """按 trace_id 读取完整 JSON"""
+    try:
+        d = _trace_dir()
+        idx = d / "index.jsonl"
+        target = None
+        if idx.exists():
+            with open(idx, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("trace_id") == trace_id:
+                        target = rec
+                        break
+        if not target:
+            return {"ok": False, "error": "trace 不存在或 index 已清理"}
+        path = d / str(target.get("file", ""))
+        if not path.exists():
+            return {"ok": False, "error": "trace 文件已被清理"}
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"ok": True, "data": data}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def open_trace_dir() -> str:
+    d = _trace_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return open_in_explorer(str(d))
+
+
+def clear_llm_traces() -> str:
+    """清空 trace 文件与 index（保留目录）"""
+    try:
+        d = _trace_dir()
+        if not d.exists():
+            return "trace 目录不存在"
+        n = 0
+        for p in list(d.iterdir()):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                n += 1
+            elif p.name == "index.jsonl":
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+        return "已清理 %d 个日期目录" % n
+    except Exception as e:
+        return "清理失败: %s" % e

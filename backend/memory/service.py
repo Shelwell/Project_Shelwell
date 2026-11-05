@@ -99,28 +99,33 @@ class MemoryService:
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    score: float = 0.0, emotion: str = "",
                    speaker_id: str = "", channel_type: str = "",
-                   channel_id: str = "", speaker_name: str = "") -> bool:
+                   channel_id: str = "", speaker_name: str = "",
+                   direct: bool = None) -> bool:
         """
         写入一轮对话：
         1. 归档到 JSONL（权威）
         2. 提交索引任务（异步）
         评分暂只记录，不做过滤（阶段 A 策略）。
+        direct: 是否直接互动（私聊/@/回复/点名）；None 时私聊默认 True、群聊默认 False。
         """
         event = MemoryEvent.create(
             session_id, user_msg, ai_msg, score=score, emotion=emotion,
             speaker_id=speaker_id, channel_type=channel_type or "private",
             channel_id=channel_id, speaker_name=speaker_name,
         )
+        if direct is None:
+            direct = (event.channel_type == "private")
         if not self.archive.append(event):
             return False
-        # 关系等级：按归档消息累加条数与首次出现时间（失败不影响记忆）
+        # 关系等级：msg_count 记曝光，direct_count 记真正互动
         if self.relationship is not None:
             try:
                 self.relationship.observe(
                     speaker_id=event.speaker_id,
                     display_name=event.speaker_name,
                     channel_type=event.channel_type,
-                    channel_id=event.channel_id)
+                    channel_id=event.channel_id,
+                    direct=bool(direct))
             except Exception as e:
                 print(f"[Memory] 关系等级更新失败: {e}")
         # 同步索引，保证写入后立即可查；失败才入队异步重试
@@ -383,11 +388,15 @@ class MemoryService:
                         if self.archive.append(ev):
                             if self.relationship is not None:
                                 try:
+                                    # 历史数据没有 direct 标记：私聊/有 AI 回复的群聊视为直接互动
+                                    direct = (ev.channel_type == "private"
+                                              or bool(ev.ai_msg))
                                     self.relationship.observe(
                                         speaker_id=ev.speaker_id,
                                         display_name=ev.speaker_name,
                                         channel_type=ev.channel_type,
                                         channel_id=ev.channel_id,
+                                        direct=direct,
                                         ts=ev.timestamp)
                                 except Exception as e:
                                     print(f"[Memory] 导入时关系等级更新失败: {e}")

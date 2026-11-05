@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -19,10 +20,13 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from backend.orchestrator import Orchestrator
+from backend.group_state import GroupStateMachine
 from backend.vision import VisionPipeline
+from backend.session_summary import summarize_history, configured_model
 from engagement import EngagementTracker
 from gate import GateRunner
 from backend.config_loader import get
+from backend.runtime_config import get_runtime
 
 logging.basicConfig(level=logging.INFO, format="[QQ] %(asctime)s %(message)s")
 log = logging.getLogger("qq_bot")
@@ -38,6 +42,8 @@ class QQBot:
         self.ws = None
         self.self_id = None
         self.sessions = {}       # session_id -> [{"role","content"}]
+        self._session_prompt_tokens = {}   # session_id -> 上次 prompt token 数
+        self._session_summary = {}         # session_id -> 会话摘要
         self.orchestrator = Orchestrator()
         self._last_silent = False   # 上一轮是否由模型选择沉默（旁白不算她说话）
         self.group_enabled = get("qq_bot.group_enabled", True)
@@ -56,6 +62,24 @@ class QQBot:
                          self.gate.mode, self.gate.log_path)
         except Exception as e:
             log.warning("接话门禁初始化失败，回退旧策略: %s", e)
+
+        # 最小版群聊状态机：shadow 只记录状态转移，不改变实际发送
+        self.state_machine = None
+        self.state_log_path = str(_PROJECT_ROOT / "logs" / "group_state.jsonl")
+        self._state_tasks = {}
+        try:
+            _scfg = get("qq_bot.group_state", {}) or {}
+            if _scfg.get("enabled", True):
+                self.state_machine = GroupStateMachine(_scfg)
+                self.state_log_path = str(
+                    _PROJECT_ROOT / (_scfg.get("log_path")
+                                     or "logs/group_state.jsonl"))
+                log.info("群聊状态机已启用: mode=%s -> %s",
+                         self.state_machine.mode, self.state_log_path)
+                if self.state_machine.mode != "shadow":
+                    log.warning("group_state.active 尚未实现，当前仍按 shadow 记录")
+        except Exception as e:
+            log.warning("群聊状态机初始化失败（不影响发送）: %s", e)
 
         # 视觉：直连主模型识别小图（QQ 表情包），按指纹缓存去重
         self.vision = None
@@ -79,6 +103,11 @@ class QQBot:
 
     def shutdown(self):
         """释放机器人持有的资源"""
+        for task in list(getattr(self, "_state_tasks", {}).values()):
+            try:
+                task.cancel()
+            except Exception:
+                pass
         if self.orchestrator is not None and hasattr(self.orchestrator, "shutdown"):
             try:
                 self.orchestrator.shutdown()
@@ -163,12 +192,13 @@ class QQBot:
 
             # 新策略：门禁决策（active 时直接生效）
             engage = legacy_engage
+            reply_id = self.extract_reply(evt.get("message"))
+            quoted_sender = ""
+            if reply_id and reply_id in self.message_cache:
+                quoted_sender = self.message_cache[reply_id].get("sender", "")
+            gate_reason, gate_score = "legacy", 0.0
             if self.gate is not None:
                 try:
-                    reply_id = self.extract_reply(evt.get("message"))
-                    quoted_sender = ""
-                    if reply_id and reply_id in self.message_cache:
-                        quoted_sender = self.message_cache[reply_id].get("sender", "")
                     rec = self.gate.decide(
                         group_id=group_id, sender_id=user_id,
                         sender_name=self._sender_name(evt), text=text,
@@ -180,6 +210,8 @@ class QQBot:
                         legacy_engage=legacy_engage,
                         msg_id=str(evt.get("message_id") or ""))
                     d = (rec or {}).get("decision", {})
+                    gate_reason = str(d.get("reason", ""))
+                    gate_score = float(d.get("score", 0.0) or 0.0)
                     log.info("[Gate:%s] %s reason=%s score=%.2f | %s",
                              self.gate.mode,
                              "接" if d.get("respond") else "不接",
@@ -193,6 +225,20 @@ class QQBot:
                     log.warning("接话门禁异常，回退旧策略: %s", e)
                     engage = legacy_engage
 
+            # 状态机 shadow：只记录会怎么排队/合并/冷却，不影响 engage
+            reply_to_me = self._is_reply_to_me(reply_id, quoted_sender)
+            self._observe_group_state(
+                group_id=group_id,
+                ts=float(evt.get("time") or 0) or time.time(),
+                strong=bool(at_me or reply_to_me),
+                weak=bool(is_q or gate_score >= 0.25),
+                gate_respond=bool(engage),
+                gate_reason=gate_reason,
+                score=gate_score,
+                sender=self._sender_name(evt),
+                text=text,
+            )
+
             if engage:
                 need_engage = True
                 log.info("接话 [群%s] heat=%.1f at_me=%s", group_id, heat, at_me)
@@ -201,7 +247,8 @@ class QQBot:
                     image_segs, describe_missing=False)
             else:
                 # 不接：后台归档（图片识别较慢，不能阻塞后续消息处理）
-                self._spawn_archive(evt, text, image_segs)
+                self._spawn_archive(evt, text, image_segs,
+                                    direct=bool(at_me or reply_to_me))
                 return
         else:
             # 私聊：图片随消息送模型
@@ -431,11 +478,11 @@ class QQBot:
         """兼容旧调用：等价于 is_at_me"""
         return self.is_at_me(evt, text)
 
-    def _spawn_archive(self, evt, text, image_segs=None):
+    def _spawn_archive(self, evt, text, image_segs=None, direct=False):
         """后台归档（含图片识别），不阻塞 WS 消息处理"""
         async def run():
             try:
-                await self.archive_only(evt, text, image_segs)
+                await self.archive_only(evt, text, image_segs, direct=direct)
             except Exception as e:
                 log.warning("后台归档失败: %s", e)
         try:
@@ -443,7 +490,7 @@ class QQBot:
         except Exception as e:
             log.warning("创建归档任务失败: %s", e)
 
-    async def archive_only(self, evt, text, image_segs=None):
+    async def archive_only(self, evt, text, image_segs=None, direct=False):
         """未触发的群消息：归档（图片先识别成文字描述再入库）"""
         user_id = str(evt.get("user_id", ""))
         group_id = str(evt.get("group_id", ""))
@@ -463,12 +510,110 @@ class QQBot:
                 user_msg=user_text, ai_msg="",
                 session_id=session_id,
                 speaker_id=user_id, channel_type="group", channel_id=group_id,
-                speaker_name=speaker_name,
+                speaker_name=speaker_name, direct=direct,
             )
             if notes:
                 log.info("图片已识别入库: %s", " ".join(notes)[:60])
         except Exception as e:
             log.warning("群消息归档失败: %s", e)
+
+    def _is_reply_to_me(self, reply_id, quoted_sender):
+        """是否引用/回复了她的消息（状态机强信号）"""
+        if not reply_id or not quoted_sender:
+            return False
+        if self.bot_name and quoted_sender == self.bot_name:
+            return True
+        return any(k and k in quoted_sender for k in self.trigger_keywords)
+
+    def _observe_group_state(self, group_id, ts, strong, weak,
+                             gate_respond, gate_reason, score, sender, text):
+        """shadow：只记录状态转移和“会不会接”，不改变实际发送"""
+        if self.state_machine is None:
+            return
+        try:
+            rec = self.state_machine.observe(
+                group_id=group_id, ts=ts, strong=strong, weak=weak,
+                gate_respond=gate_respond, gate_reason=gate_reason,
+                score=score, sender=sender, text=text)
+            if rec:
+                self._log_state(rec)
+                if rec.get("pending_until"):
+                    self._schedule_state_timer(group_id)
+        except Exception as e:
+            log.warning("群聊状态机记录失败（不影响发送）: %s", e)
+
+    def _schedule_state_timer(self, group_id):
+        if self.state_machine is None:
+            return
+        old = self._state_tasks.get(group_id)
+        if old is not None and not old.done():
+            old.cancel()
+        task = asyncio.create_task(self._run_state_timer(group_id))
+        self._state_tasks[group_id] = task
+
+    async def _run_state_timer(self, group_id):
+        """到点推进 shadow 状态：观察超时 / 排队结束 / 冷却结束"""
+        try:
+            while True:
+                deadline = self.state_machine.next_deadline(group_id)
+                if not deadline:
+                    break
+                delay = deadline - time.time()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                rec = self.state_machine.finalize(group_id)
+                if not rec:
+                    break
+                self._log_state(rec)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("群聊状态机定时推进失败: %s", e)
+        finally:
+            task = asyncio.current_task()
+            if self._state_tasks.get(group_id) is task:
+                self._state_tasks.pop(group_id, None)
+
+    def _log_state(self, rec):
+        try:
+            rec = dict(rec)
+            rec["mode"] = self.state_machine.mode if self.state_machine else "shadow"
+            d = os.path.dirname(self.state_log_path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(self.state_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as e:
+            log.warning("写群聊状态日志失败: %s", e)
+
+    def _maybe_compact(self, session_id, history, speaker_name=""):
+        """token 探针触发时才压缩；摘要用质量模型，失败则保持原历史"""
+        existing = self._session_summary.get(session_id, "")
+        try:
+            rt = get_runtime()
+            num_ctx = int(rt.get("generation.num_ctx")
+                          or get("generation.num_ctx", 32768))
+            threshold = float(get("context.compact_at", 0.7) or 0.7)
+            last = int(self._session_prompt_tokens.get(session_id, 0) or 0)
+            keep = int(get("context.keep_recent_turns", 10) or 10) * 2
+            if last <= 0 or last < num_ctx * threshold or len(history) <= keep:
+                return existing
+            old = list(history[:-keep])
+            recent = list(history[-keep:])
+            summary = summarize_history(
+                old, previous_summary=existing,
+                max_chars=int(get("context.summary_max_chars", 800) or 800),
+                model=configured_model())
+            if summary:
+                history[:] = recent
+                self._session_summary[session_id] = summary
+                self._session_prompt_tokens[session_id] = 0
+                log.info("会话压缩: %d 条旧消息 -> %d 字摘要 | %s",
+                         len(old), len(summary), session_id)
+                return summary
+        except Exception as e:
+            log.warning("会话压缩失败（保持原历史）: %s", e)
+        return existing
 
     def session_id(self, evt):
         if evt.get("message_type") == "private":
@@ -482,11 +627,6 @@ class QQBot:
         history = self.sessions.setdefault(session_id, [])
         # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
         history.append({"role": "user", "content": text})
-        # 本轮要送模型的 messages：图片只挂在这一条上，不进历史
-        msgs = list(history)
-        if images:
-            msgs[-1] = dict(msgs[-1])
-            msgs[-1]["images"] = images
 
         # 构造"谁在说话"的上下文说明，并取出昵称供记忆归属使用
         speaker_hint = ""
@@ -508,23 +648,32 @@ class QQBot:
         # 模型常驻由配置 generation.keep_alive 控制（不要冷加载），这里不再按热度卸载
         keep_alive = None
 
-        # orchestrator 内部是同步 requests，放线程池避免阻塞事件循环
         loop = asyncio.get_event_loop()
-        try:
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.orchestrator.chat(
-                    msgs, session_id=session_id, current_query=text,
-                    speaker_id=speaker_id, channel_type=channel_type,
-                    channel_id=channel_id, speaker_name=speaker_name,
-                    speaker_hint=speaker_hint, quote_hint=quote_hint,
-                    keep_alive=keep_alive,
-                ),
+
+        def _run():
+            summary = self._maybe_compact(session_id, history, speaker_name)
+            msgs = list(history)
+            if images:
+                msgs[-1] = dict(msgs[-1])
+                msgs[-1]["images"] = images
+            return self.orchestrator.chat(
+                msgs, session_id=session_id, current_query=text,
+                speaker_id=speaker_id, channel_type=channel_type,
+                channel_id=channel_id, speaker_name=speaker_name,
+                speaker_hint=speaker_hint, quote_hint=quote_hint,
+                keep_alive=keep_alive, session_summary=summary,
             )
+
+        try:
+            result = await loop.run_in_executor(None, _run)
         except Exception as e:
             log.warning("orchestrator 异常: %s", e)
             history.pop()
             return "脑子卡了一下\n再说一遍"
+
+        usage = result.get("usage") or {}
+        if usage.get("prompt_tokens"):
+            self._session_prompt_tokens[session_id] = int(usage["prompt_tokens"])
 
         if not result.get("ok"):
             log.warning("生成失败: %s", result.get("error"))

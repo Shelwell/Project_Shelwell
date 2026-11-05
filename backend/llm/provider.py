@@ -28,6 +28,7 @@ def chat(messages: list, keep_alive: str = None, model_override: str = None) -> 
     provider = (rt.get("active.provider") or "ollama").strip()
     model = model_override or rt.get("active.model") or ""
     t0 = time.time()
+    _LAST_USAGE["data"] = {}
     try:
         if provider == "ollama":
             text = _chat_ollama(messages, rt, keep_alive, model_override)
@@ -44,8 +45,15 @@ def chat(messages: list, keep_alive: str = None, model_override: str = None) -> 
         prompt_tokens=usage.get("prompt_tokens", 0),
         completion_tokens=usage.get("completion_tokens", 0),
         elapsed=time.time() - t0,
+        prompt_eval_duration=usage.get("prompt_eval_duration", 0),
+        eval_duration=usage.get("eval_duration", 0),
     )
     return text
+
+
+def get_last_usage() -> dict:
+    """最近一次调用的 token/耗时元数据（供 token 探针使用）"""
+    return dict(_LAST_USAGE.get("data") or {})
 
 
 def _gen_options(rt) -> dict:
@@ -107,7 +115,14 @@ def _chat_ollama(messages: list, rt, keep_alive: str = None,
         raise ProviderError(f"ollama 连接失败: {e}") from e
     if resp.status_code != 200:
         raise ProviderError(f"ollama status={resp.status_code} detail={resp.text[:200]}")
-    return resp.json().get("message", {}).get("content", "")
+    data = resp.json()
+    _LAST_USAGE["data"] = {
+        "prompt_tokens": int(data.get("prompt_eval_count", 0) or 0),
+        "completion_tokens": int(data.get("eval_count", 0) or 0),
+        "prompt_eval_duration": int(data.get("prompt_eval_duration", 0) or 0),
+        "eval_duration": int(data.get("eval_duration", 0) or 0),
+    }
+    return data.get("message", {}).get("content", "")
 
 
 def _chat_openai(messages: list, rt, model_override: str = None) -> str:
