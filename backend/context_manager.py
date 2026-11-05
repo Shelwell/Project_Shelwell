@@ -82,7 +82,7 @@ class ContextManager:
                         system_as_role: bool = False, speaker_id: str = None,
                         channel_type: str = None, channel_id: str = None,
                         speaker_hint: str = "", quote_hint: str = "",
-                        speaker_name: str = "") -> list:
+                        speaker_name: str = "", session_summary: str = "") -> list:
         """
         构建发送给模型的消息列表
         兼容 Mistral 等 [INST] 格式模型：不单独发 system 消息，
@@ -107,6 +107,16 @@ class ContextManager:
         if rel_text:
             dynamic_parts.append(rel_text)
 
+        # 当前说话人的稳定档案：不依赖当前 query 命中，短消息也能带着基本记忆
+        profile_text = self._profile_block(speaker_id)
+        if profile_text:
+            dynamic_parts.append(profile_text)
+
+        if session_summary:
+            dynamic_parts.append(
+                "【会话摘要｜早期对话压缩，不是对方原话，不要复述】\n"
+                + str(session_summary).strip())
+
         # --- 第二级：长期记忆检索（语义优先，不足回退情景）---
         if self.memory_enabled and self.memory is not None and current_query:
             semantic_hits = []
@@ -126,7 +136,12 @@ class ContextManager:
                     fact_objs = [h.get("_fact") for h in semantic_hits if h.get("_fact")]
                     picked = select_for_injection(fact_objs)
                     if picked:
-                        text = format_injection(picked)
+                        text = format_injection(
+                            picked,
+                            template={
+                                "header": "【相关记忆｜当前说话人的事实，不是你的经历，不要复述】",
+                                "line_prefix": "- ",
+                            })
                         dynamic_parts.append(text)
                         print(f"[Context] 注入 {len(picked)} 条语义事实（按权重过滤）")
                     else:
@@ -168,12 +183,14 @@ class ContextManager:
             try:
                 try:
                     group_msgs = self.memory.get_group_context(
-                        channel_id, limit=10,
+                        channel_id, limit=50,
                         bot_name=self.persona_engine.display_name)
                 except TypeError:
                     # 兼容只接受 (channel_id, limit) 的旧记忆桩/实现
-                    group_msgs = self.memory.get_group_context(channel_id, limit=10)
+                    group_msgs = self.memory.get_group_context(channel_id, limit=50)
                 if group_msgs:
+                    group_msgs = group_msgs[:50]
+                    group_max_chars = 6000
                     lines = []
                     speakers = {}
                     for item in group_msgs:
@@ -182,6 +199,10 @@ class ContextManager:
                         if not item.get("is_bot"):
                             speakers[who] = speakers.get(who, 0) + 1
                         lines.append(f"{who}：{item.get('text', '')}")
+
+                    # 50 条是上限，但长消息不能无限撑大 prompt；从最旧开始丢
+                    while len("\n".join(lines)) > group_max_chars and len(lines) > 1:
+                        lines.pop(0)
 
                     roster = "、".join(f"{n}（{c}条）" for n, c in
                                        sorted(speakers.items(), key=lambda x: -x[1]))
@@ -230,8 +251,8 @@ class ContextManager:
             except Exception as e:
                 print(f"[Context] 知识库检索失败（不影响对话）: {e}")
 
-        # --- 梗百科：消息像在问梗时才查，命中注入那一条 ---
-        if current_query:
+        # --- 梗百科：默认关闭；代码保留，memewiki.enabled=true 可恢复 ---
+        if current_query and get("memewiki.enabled", False):
             try:
                 from backend.memewiki.injector import build_injection
                 meme_text = build_injection(current_query, play_level=self._play_level())
@@ -256,8 +277,12 @@ class ContextManager:
                 recent.append({"role": "user", "content": combined_dynamic})
             else:
                 msg = dict(recent[idx])
-                msg["content"] = (combined_dynamic + "\n\n"
-                                  + (msg.get("content") or "")).strip()
+                msg["content"] = (
+                    "【背景资料｜系统提供，不是对方的话；不要复述、不要模仿格式】\n"
+                    + combined_dynamic
+                    + "\n\n【背景资料结束】\n\n【对方刚刚说】\n"
+                    + (msg.get("content") or "")
+                ).strip()
                 recent[idx] = msg
             print(f"[Context] 动态参考下沉到 user 尾部: {len(combined_dynamic)} 字")
 
@@ -283,7 +308,8 @@ class ContextManager:
 
     def archive_turn(self, user_msg: str, ai_msg: str, session_id: str = "default",
                      speaker_id: str = "", channel_type: str = "",
-                     channel_id: str = "", speaker_name: str = ""):
+                     channel_id: str = "", speaker_name: str = "",
+                     direct: bool = None):
         """归档一轮对话到长期记忆（含归属信息）"""
         if self.memory_enabled and self.memory is not None:
             try:
@@ -291,7 +317,8 @@ class ContextManager:
                                        speaker_id=speaker_id,
                                        channel_type=channel_type,
                                        channel_id=channel_id,
-                                       speaker_name=speaker_name)
+                                       speaker_name=speaker_name,
+                                       direct=direct)
             except Exception as e:
                 print(f"[Context] 归档失败: {e}")
 
@@ -319,6 +346,38 @@ class ContextManager:
                 self.memory.shutdown()
             except Exception as e:
                 print(f"[Context] 关闭记忆资源失败: {e}")
+
+    def _profile_block(self, speaker_id) -> str:
+        """当前说话人的稳定档案：不依赖 query 命中，每轮常驻一小块"""
+        if not speaker_id or self.memory is None:
+            return ""
+        try:
+            data = self.memory.list_semantic_facts(
+                page=1, page_size=20, owner_id=speaker_id, state="active")
+            items = list(data.get("items") or [])
+            if not items:
+                return ""
+            from backend.memory.forgetting import weight_of
+            items.sort(key=lambda f: weight_of(f), reverse=True)
+            lines = []
+            for f in items[:8]:
+                text = str(getattr(f, "fact", "") or "").strip()
+                if not text:
+                    continue
+                subject = str(getattr(f, "subject", "") or "").strip()
+                # 旧昵称主语替换成“对方”，避免和角色英文名冲突
+                if subject and text.startswith(subject):
+                    text = "对方" + text[len(subject):]
+                lines.append("- " + text)
+            if not lines:
+                return ""
+            return (
+                "【当前说话人的稳定档案｜系统记忆，不是你的经历，不要复述】\n"
+                + "\n".join(lines)
+            )
+        except Exception as e:
+            print(f"[Context] 用户档案注入失败（不影响对话）: {e}")
+            return ""
 
     def _relationship_block(self, speaker_id, speaker_name, channel_type) -> str:
         """

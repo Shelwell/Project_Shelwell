@@ -125,19 +125,27 @@ class Orchestrator:
 
         # 1. 构建上下文（短期 + 长期记忆 + 人格指令）
         build_error = ""
+        ctx_kwargs = dict(
+            current_query=current_query, session_id=session_id,
+            system_as_role=True,
+            speaker_id=speaker_id, channel_type=channel_type,
+            channel_id=channel_id,
+            speaker_hint=speaker_hint, quote_hint=quote_hint,
+            speaker_name=speaker_name,
+        )
         try:
             # 人格指令一律用独立 system 消息承载：Ollama 的 chat template
             # （Mistral Nemo / Qwen 系）都支持 system role；塞进 user 消息会让
             # 指令优先级降到最低，且聊到 30 轮后完全衰减。
-            prepared = self.context.prepare_context(
-                messages, current_query=current_query, session_id=session_id,
-                system_as_role=True,
-                speaker_id=speaker_id, channel_type=channel_type,
-                channel_id=channel_id,
-                speaker_hint=speaker_hint, quote_hint=quote_hint,
-                speaker_name=speaker_name,
-                session_summary=session_summary,
-            )
+            try:
+                prepared = self.context.prepare_context(
+                    messages, session_summary=session_summary, **ctx_kwargs)
+            except TypeError as e:
+                # 兼容旧版 ContextManager：不让整个上下文降级成裸消息
+                if "session_summary" not in str(e):
+                    raise
+                print("[Orchestrator] 旧版 ContextManager 不支持摘要，降级为无摘要上下文")
+                prepared = self.context.prepare_context(messages, **ctx_kwargs)
         except Exception as e:
             build_error = str(e)
             print(f"[Orchestrator] 上下文构建失败，降级为纯上下文: {e}")

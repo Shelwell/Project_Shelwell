@@ -230,7 +230,7 @@ persona = PersonaEngine().prompt
 check("人格包含五级社交分寸", "【社交分寸" in persona and "依赖：" in persona, persona[:80])
 check("人格写死群聊门槛", "群聊只有“依赖”解锁" in persona)
 check("输出规范写死禁止档", "开关为“禁止”时" in cm.OUTPUT_FORMAT)
-check("输出规范禁止复述等级", "不要把等级、条数、时长说给对方听" in cm.OUTPUT_FORMAT)
+check("输出规范禁止复述等级", "不得把等级、条数、时长说出" in cm.OUTPUT_FORMAT)
 check("旧的无条件傲娇未残留", "可以吐槽，可以怼；但对方情绪低落" not in cm.OUTPUT_FORMAT)
 
 shutil.rmtree(tmp, ignore_errors=True)
