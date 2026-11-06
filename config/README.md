@@ -51,6 +51,23 @@ runtime.yaml 的显式值
 | `context.keep_recent_turns` | 10 | 压缩后保留最近 10 轮原文 |
 | `context.summary_model` | '' | 摘要模型；空=当前对话模型 |
 | `context.summary_max_chars` | 800 | 摘要上限 |
+| `context.group_profiles_ttl_seconds` | 3600 | 群友稳定档案快照 TTL |
+| `context.group_profiles_max_members` | 8 | 最多注入多少人的档案 |
+
+### 天气
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `weather.enabled` | true | 是否启用天气/温度 |
+| `weather.timezone` | Asia/Shanghai | 时间档时区 |
+| `weather.state_path` | memory/weather_state.json | 持久化状态，重启不重掷 |
+| `weather.snow_start` / `snow_end` | 12-07 / 03-05 | 雪季 |
+| `weather.update_hours` | [5,12,20] | 每日天气变化点 |
+| `weather.temp_min` / `temp_max` | -20 / 35 | 温度范围 |
+| `weather.keep_same_chance` | 0.42 | 到变化点时保持原天气的概率 |
+| `weather.summer_months` | [6,7,8] | 夏季月份 |
+| `weather.summer_min_temp` | 10 | 夏季最低温硬下限，避免零下 |
+| `weather.summary_in_c1` | true | 是否把天气摘要放进 C1 |
 
 ### 记忆
 
@@ -123,12 +140,16 @@ runtime.yaml 的显式值
 | 字段 | 说明 |
 |---|---|
 | `qq_bot.group_enabled` | 是否处理群聊 |
+| `qq_bot.primary_group_id` | 常驻群号；私聊也带该群档案/C1，空=关闭 |
 | `qq_bot.trigger_keywords` | @/叫名字的触发词 |
 | `qq_bot.auto_engage.*` | 热度、提问/话题/刷屏权重、半衰期 |
 | `qq_bot.group_gate.*` | 门禁模式、阈值、活跃/静默时段、冷却、别名 |
 | `qq_bot.group_state.*` | 状态机开关、模式、观察/聚合/冷却窗口、日志 |
-| `qq_bot.group_context_limit` | 群共享上下文最多条数，默认 50 |
-| `qq_bot.group_context_max_chars` | 群共享上下文字符上限，默认 6000 |
+| `qq_bot.group_context_limit` | 群共享上下文最多条数，默认 20 |
+| `qq_bot.group_context_max_chars` | 群共享上下文字符上限，默认 3000 |
+| `qq_bot.group_bootstrap_limit` | 首次进群从归档读取多少条生成 C1，默认 200 |
+| `qq_bot.group_summary_keep` | 群历史压缩后保留最近多少条，默认 30 |
+| `qq_bot.group_summary_trigger_tokens` | 群历史估算 token 达到多少时总结，默认 5000 |
 
 字段细节见 [../adapters/qq_bot/README.md](../adapters/qq_bot/README.md)。
 
@@ -164,6 +185,7 @@ runtime.yaml 的显式值
 
 | 文件 | 用途 |
 |---|---|
+| `shelwell_system.txt` | 固定 system prompt（默认人格优先使用；改它才改实际 system） |
 | `shelwell_persona.yaml` | 人格定义：身份、世界、社交分寸、语言、输出规则 |
 | `shelwell_facts.yaml` | 她熟悉的事物/短期知识 |
 | `shelwell_knowledge.jsonl` | 世界设定 RAG 分块（已入库） |

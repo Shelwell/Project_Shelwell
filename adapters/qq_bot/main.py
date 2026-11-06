@@ -42,8 +42,12 @@ class QQBot:
         self.ws = None
         self.self_id = None
         self.sessions = {}       # session_id -> [{"role","content"}]
-        self._session_prompt_tokens = {}   # session_id -> 上次 prompt token 数
-        self._session_summary = {}         # session_id -> 会话摘要
+        self.group_sessions = {}  # group_id -> 群共享短期历史（带昵称，缓存友好）
+        self._session_prompt_tokens = {}   # state_key -> 上次 prompt token 数
+        self._session_summary = {}         # state_key -> 会话摘要
+        self._group_tokens = {}            # group_id -> 估算 token
+        self._group_bootstrapped = set()   # 已从历史归档生成 C1 的群
+        self._group_summary_tasks = {}     # group_id -> asyncio.Task
         self.orchestrator = Orchestrator()
         self._last_silent = False   # 上一轮是否由模型选择沉默（旁白不算她说话）
         self.group_enabled = get("qq_bot.group_enabled", True)
@@ -239,17 +243,26 @@ class QQBot:
                 text=text,
             )
 
+            # 群消息无论是否接话都进共享历史；首次进群时从归档生成 C1
+            speaker_label = self._sender_name(evt)
+            try:
+                asyncio.create_task(self._bootstrap_group_summary(group_id))
+            except Exception as e:
+                log.warning("群 C1 初始化调度失败: %s", e)
+            if not engage:
+                self._group_append(group_id, speaker_label, text)
+                self._maybe_summarize_group(group_id)
+                # 不接：后台归档（图片识别较慢，不能阻塞后续消息处理）
+                self._spawn_archive(evt, text, image_segs,
+                                    direct=bool(at_me or reply_to_me))
+                return
+
             if engage:
                 need_engage = True
                 log.info("接话 [群%s] heat=%.1f at_me=%s", group_id, heat, at_me)
                 # 要回复：图片直接随本条消息送进模型（不预先识别，省一次推理）
                 image_payloads, image_notes = await self._prepare_images(
                     image_segs, describe_missing=False)
-            else:
-                # 不接：后台归档（图片识别较慢，不能阻塞后续消息处理）
-                self._spawn_archive(evt, text, image_segs,
-                                    direct=bool(at_me or reply_to_me))
-                return
         else:
             # 私聊：图片随消息送模型
             image_payloads, image_notes = await self._prepare_images(
@@ -586,6 +599,113 @@ class QQBot:
         except Exception as e:
             log.warning("写群聊状态日志失败: %s", e)
 
+    @staticmethod
+    def _group_state_key(group_id: str) -> str:
+        return f"group:{group_id}"
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        # 中文约 1.4–1.7 字符/token；用 1.5 做保守估算
+        return max(1, int(len(text or "") / 1.5))
+
+    def _group_token_count(self, group_id: str) -> int:
+        return int(self._group_tokens.get(str(group_id), 0) or 0)
+
+    def _group_append(self, group_id: str, speaker: str, text: str):
+        hist = self.group_sessions.setdefault(f"group:{group_id}", [])
+        hist.append({"role": "user", "content": f"{speaker or '?'}：{text}"})
+        self._group_tokens[str(group_id)] = (
+            self._group_token_count(group_id) + self._estimate_tokens(text))
+        if len(hist) > MAX_SESSION_MESSAGES:
+            del hist[: len(hist) - MAX_SESSION_MESSAGES]
+
+    async def _bootstrap_group_summary(self, group_id: str):
+        """首次遇到群消息时，从归档拉全量历史并生成 C1 摘要。"""
+        gid = str(group_id)
+        if gid in self._group_bootstrapped:
+            return
+        self._group_bootstrapped.add(gid)
+        try:
+            ctx = getattr(self.orchestrator, "context", None)
+            mem = getattr(ctx, "memory", None)
+            if mem is None or not hasattr(mem, "get_group_context"):
+                return
+            limit = int(get("qq_bot.group_bootstrap_limit", 200) or 200)
+            try:
+                items = mem.get_group_context(
+                    gid, limit=limit, bot_name=self.bot_name)
+            except TypeError:
+                items = mem.get_group_context(gid, limit=limit)
+            msgs = []
+            for item in items or []:
+                txt = str(item.get("text") or "").strip()
+                if not txt:
+                    continue
+                if item.get("is_bot"):
+                    msgs.append({"role": "assistant", "content": txt})
+                else:
+                    msgs.append({"role": "user",
+                                 "content": f"{item.get('speaker') or '?'}：{txt}"})
+            if len(msgs) < 10:
+                self._group_bootstrapped.discard(gid)
+                return
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(
+                None,
+                lambda: summarize_history(
+                    msgs, previous_summary="",
+                    max_chars=int(get("context.summary_max_chars", 800) or 800),
+                    model=configured_model()))
+            if summary:
+                key = self._group_state_key(gid)
+                self._session_summary[key] = summary
+                self._session_prompt_tokens[key] = 0
+                log.info("群历史 C1 初始化: %s -> %d 字", gid, len(summary))
+        except Exception as e:
+            self._group_bootstrapped.discard(gid)
+            log.warning("群历史 C1 初始化失败: %s", e)
+
+    async def _summarize_group_history(self, group_id: str):
+        gid = str(group_id)
+        key = self._group_state_key(gid)
+        hist = self.group_sessions.get(key, [])
+        if not hist:
+            return
+        keep = int(get("qq_bot.group_summary_keep", 30) or 30)
+        old = list(hist[:-keep])
+        recent = list(hist[-keep:])
+        if not old:
+            return
+        loop = asyncio.get_event_loop()
+        summary = await loop.run_in_executor(
+            None,
+            lambda: summarize_history(
+                old, previous_summary=self._session_summary.get(key, ""),
+                max_chars=int(get("context.summary_max_chars", 800) or 800),
+                model=configured_model()))
+        if not summary:
+            return
+        hist[:] = recent
+        self._session_summary[key] = summary
+        self._session_prompt_tokens[key] = 0
+        self._group_tokens[gid] = sum(
+            self._estimate_tokens(m.get("content", "")) for m in hist)
+        log.info("群历史压缩: %d 条 -> %d 字 | %s", len(old), len(summary), gid)
+
+    def _maybe_summarize_group(self, group_id: str):
+        gid = str(group_id)
+        limit = int(get("context.group_summary_trigger_tokens", 5000) or 5000)
+        if self._group_token_count(gid) < limit:
+            return
+        task = self._group_summary_tasks.get(gid)
+        if task and not task.done():
+            return
+        try:
+            self._group_summary_tasks[gid] = asyncio.create_task(
+                self._summarize_group_history(gid))
+        except Exception as e:
+            log.warning("群历史压缩任务创建失败: %s", e)
+
     def _maybe_compact(self, session_id, history, speaker_name=""):
         """token 探针触发时才压缩；摘要用质量模型，失败则保持原历史"""
         existing = self._session_summary.get(session_id, "")
@@ -624,7 +744,14 @@ class QQBot:
                     channel_id="", evt=None, quoted=None, images=None,
                     at_me=False):
         self._last_silent = False
-        history = self.sessions.setdefault(session_id, [])
+        is_group = bool(channel_type == "group" and channel_id)
+        if is_group:
+            # 群聊共享一份短期历史：不同发言人轮流说话时前缀仍连续，缓存更容易命中
+            state_key = f"group:{channel_id}"
+            history = self.group_sessions.setdefault(state_key, [])
+        else:
+            state_key = session_id
+            history = self.sessions.setdefault(session_id, [])
         # history 只存纯文本，发送者信息通过 system 注入（避免模型照抄 [昵称] 格式）
         history.append({"role": "user", "content": text})
 
@@ -635,7 +762,12 @@ class QQBot:
             sender = evt.get("sender") or {}
             speaker_name = (sender.get("card") or sender.get("nickname")
                             or str(speaker_id or ""))
-        if channel_type == "group" and evt:
+        if is_group:
+            # 群共享历史里必须带昵称，否则模型分不清谁说的
+            history[-1]["content"] = f"{speaker_name or speaker_id}：{text}"
+            self._group_tokens[str(channel_id)] = (
+                self._group_token_count(str(channel_id)) + self._estimate_tokens(text))
+            self._maybe_summarize_group(str(channel_id))
             speaker_hint = f"当前发言者：{speaker_name or speaker_id}"
             if at_me:
                 speaker_hint += "（这条在 @ 你，必须给出回应，不要沉默）"
@@ -651,17 +783,26 @@ class QQBot:
         loop = asyncio.get_event_loop()
 
         def _run():
-            summary = self._maybe_compact(session_id, history, speaker_name)
+            summary = self._maybe_compact(state_key, history, speaker_name)
             msgs = list(history)
             if images:
                 msgs[-1] = dict(msgs[-1])
                 msgs[-1]["images"] = images
+            resident_gid = ""
+            resident_summary = ""
+            if not is_group:
+                resident_gid = str(get("qq_bot.primary_group_id", "") or "").strip()
+                if resident_gid:
+                    resident_summary = self._session_summary.get(
+                        self._group_state_key(resident_gid), "")
             return self.orchestrator.chat(
                 msgs, session_id=session_id, current_query=text,
                 speaker_id=speaker_id, channel_type=channel_type,
                 channel_id=channel_id, speaker_name=speaker_name,
                 speaker_hint=speaker_hint, quote_hint=quote_hint,
                 keep_alive=keep_alive, session_summary=summary,
+                resident_group_id=resident_gid,
+                resident_group_summary=resident_summary,
             )
 
         try:
@@ -673,7 +814,7 @@ class QQBot:
 
         usage = result.get("usage") or {}
         if usage.get("prompt_tokens"):
-            self._session_prompt_tokens[session_id] = int(usage["prompt_tokens"])
+            self._session_prompt_tokens[state_key] = int(usage["prompt_tokens"])
 
         if not result.get("ok"):
             log.warning("生成失败: %s", result.get("error"))
@@ -691,6 +832,10 @@ class QQBot:
         self._last_silent = False
         reply = result["reply"]
         history.append({"role": "assistant", "content": reply})
+        if is_group:
+            self._group_tokens[str(channel_id)] = (
+                self._group_token_count(str(channel_id)) + self._estimate_tokens(reply))
+            self._maybe_summarize_group(str(channel_id))
 
         # 防内存膨胀：超出上限截断最早的
         if len(history) > MAX_SESSION_MESSAGES:
@@ -745,6 +890,12 @@ class QQBot:
         """连接后延迟 2 秒拉取，避免和握手撞车"""
         await asyncio.sleep(2)
         await self.refresh_account_info()
+        try:
+            gid = str(get("qq_bot.primary_group_id", "") or "").strip()
+            if gid:
+                asyncio.create_task(self._bootstrap_group_summary(gid))
+        except Exception as e:
+            log.warning("启动群历史 C1 初始化调度失败: %s", e)
 
     async def refresh_account_info(self):
         """拉取账号信息写入状态文件，供 desktop 读取"""

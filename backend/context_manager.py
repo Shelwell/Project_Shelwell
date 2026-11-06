@@ -1,7 +1,11 @@
 # backend/context_manager.py
+from pathlib import Path
+import time
+
 from backend.memory_retriever import MemoryRetriever
 from backend.config_loader import get
 from backend.persona_engine import PersonaEngine
+from backend.weather import WeatherService
 
 
 class ContextManager:
@@ -59,8 +63,12 @@ class ContextManager:
     def __init__(self, max_context_length: int = None, memory_enabled: bool = None):
         self.persona_engine = PersonaEngine()
         self._persona_key = self._persona_signature()
+        # 静态系统提示词：固定文件，避免每轮重新拼接，便于前缀缓存复用。
+        # 仅对当前默认人格生效；切换其他人格时回退动态编译，避免文不对人。
+        self._static_system = self._load_static_system()
         self.system_instruction = (
-            self.OUTPUT_FORMAT + "\n\n" + self.persona_engine.prompt
+            self._static_system
+            or (self.OUTPUT_FORMAT + "\n\n" + self.persona_engine.prompt)
         )
         self.max_context_length = max_context_length if max_context_length is not None \
             else get("context.max_length", 30)
@@ -78,11 +86,21 @@ class ContextManager:
         self._knowledge = None
         self._knowledge_tried = False
 
+        self.weather = None
+        try:
+            if get("weather.enabled", False):
+                self.weather = WeatherService()
+        except Exception as e:
+            print(f"[Context] 天气服务初始化失败，降级为无天气: {e}")
+        self._group_profiles_cache = {}  # group_id -> (ts, text)
+
     def prepare_context(self, messages: list, current_query: str = None, session_id: str = None,
                         system_as_role: bool = False, speaker_id: str = None,
                         channel_type: str = None, channel_id: str = None,
                         speaker_hint: str = "", quote_hint: str = "",
-                        speaker_name: str = "", session_summary: str = "") -> list:
+                        speaker_name: str = "", session_summary: str = "",
+                        resident_group_id: str = "",
+                        resident_group_summary: str = "") -> list:
         """
         构建发送给模型的消息列表
         兼容 Mistral 等 [INST] 格式模型：不单独发 system 消息，
@@ -100,7 +118,20 @@ class ContextManager:
         system_parts = [self.system_instruction]
         # 动态内容（记忆/群上下文/梗/场景）统一放这里，最后拼到本轮 user 消息，
         # 保证 system + 历史前缀稳定，命中 Ollama 前缀缓存（否则每轮全量重算）
-        dynamic_parts = []
+        dynamic_parts = []   # D：历史之后的可变尾部
+        stable_parts = []    # B/C1：放在 system，历史之前
+
+        weather_snap = None
+        weather_summary = ""
+        weather_env = ""
+        if self.weather is not None:
+            try:
+                weather_snap = self.weather.current()
+                if get("weather.summary_in_c1", True):
+                    weather_summary = self.weather.summary(weather_snap)
+                weather_env = self.weather.environment(weather_snap)
+            except Exception as e:
+                print(f"[Context] 天气读取失败，降级为无天气: {e}")
 
         # --- 关系等级：代码判定，放动态段最前面（本轮说话人是谁、什么等级）---
         rel_text = self._relationship_block(speaker_id, speaker_name, channel_type)
@@ -110,12 +141,26 @@ class ContextManager:
         # 当前说话人的稳定档案：不依赖当前 query 命中，短消息也能带着基本记忆
         profile_text = self._profile_block(speaker_id)
         if profile_text:
-            dynamic_parts.append(profile_text)
+            stable_parts.append(profile_text)
 
-        if session_summary:
-            dynamic_parts.append(
-                "【会话摘要｜早期对话压缩，不是对方原话，不要复述】\n"
-                + str(session_summary).strip())
+        # B：本群所有群友的稳定档案快照（短 TTL，避免每轮变化）
+        profile_group = (channel_id if channel_type == "group"
+                         else (resident_group_id if channel_type == "private" else ""))
+        if profile_group:
+            group_profiles = self._group_profiles_block(profile_group)
+            if group_profiles:
+                stable_parts.append(group_profiles)
+
+        summary_text = str(session_summary or "").strip()
+        resident_summary = str(resident_group_summary or "").strip()
+        if resident_summary:
+            summary_text = resident_summary + (("\n" + summary_text) if summary_text else "")
+        if weather_summary:
+            summary_text = weather_summary + (("\n" + summary_text) if summary_text else "")
+        if summary_text:
+            stable_parts.append(
+                "【会话摘要｜早期对话压缩/天气摘要，不是对方原话，不要复述】\n"
+                + summary_text)
 
         # --- 第二级：长期记忆检索（语义优先，不足回退情景）---
         if self.memory_enabled and self.memory is not None and current_query:
@@ -135,6 +180,10 @@ class ContextManager:
                     # semantic_hits 里是 dict，取出 fact 对象
                     fact_objs = [h.get("_fact") for h in semantic_hits if h.get("_fact")]
                     picked = select_for_injection(fact_objs)
+                    # 稳定档案已经出现的事实不重复注入
+                    if profile_text:
+                        picked = [f for f in picked
+                                  if self._fact_text(f) not in profile_text]
                     if picked:
                         text = format_injection(
                             picked,
@@ -181,16 +230,17 @@ class ContextManager:
         # --- 群聊补充：拉取该群最近消息作为上下文（带发言人身份）---
         if channel_type == "group" and channel_id and self.memory_enabled and self.memory is not None:
             try:
+                group_limit = int(get("qq_bot.group_context_limit", 20) or 20)
+                group_max_chars = int(get("qq_bot.group_context_max_chars", 3000) or 3000)
                 try:
                     group_msgs = self.memory.get_group_context(
-                        channel_id, limit=50,
+                        channel_id, limit=group_limit,
                         bot_name=self.persona_engine.display_name)
                 except TypeError:
                     # 兼容只接受 (channel_id, limit) 的旧记忆桩/实现
-                    group_msgs = self.memory.get_group_context(channel_id, limit=50)
+                    group_msgs = self.memory.get_group_context(channel_id, limit=group_limit)
                 if group_msgs:
-                    group_msgs = group_msgs[:50]
-                    group_max_chars = 6000
+                    group_msgs = group_msgs[:group_limit]
                     lines = []
                     speakers = {}
                     for item in group_msgs:
@@ -204,8 +254,7 @@ class ContextManager:
                     while len("\n".join(lines)) > group_max_chars and len(lines) > 1:
                         lines.pop(0)
 
-                    roster = "、".join(f"{n}（{c}条）" for n, c in
-                                       sorted(speakers.items(), key=lambda x: -x[1]))
+                    roster = "、".join(sorted(speakers))
                     block = (
                         "【群里刚才在聊】\n"
                         "下面是本群最近的真实对话，冒号前是发言人。\n"
@@ -262,7 +311,10 @@ class ContextManager:
             except Exception as e:
                 print(f"[Context] 梗百科注入失败（不影响对话）: {e}")
 
-        combined_system = "\n\n".join(system_parts)
+        if weather_env:
+            dynamic_parts.append(weather_env)
+
+        combined_system = "\n\n".join(system_parts + stable_parts)
         combined_dynamic = "\n\n".join(dynamic_parts)
 
         # 动态参考信息拼到本轮 user 消息前面：system 与历史保持字节级不变，
@@ -347,6 +399,15 @@ class ContextManager:
             except Exception as e:
                 print(f"[Context] 关闭记忆资源失败: {e}")
 
+    @staticmethod
+    def _fact_text(f) -> str:
+        text = str(getattr(f, "fact", "") or "").strip()
+        subject = str(getattr(f, "subject", "") or "").strip()
+        # 旧昵称主语替换成“对方”，避免和角色英文名冲突
+        if subject and text.startswith(subject):
+            text = "对方" + text[len(subject):]
+        return text
+
     def _profile_block(self, speaker_id) -> str:
         """当前说话人的稳定档案：不依赖 query 命中，每轮常驻一小块"""
         if not speaker_id or self.memory is None:
@@ -361,13 +422,9 @@ class ContextManager:
             items.sort(key=lambda f: weight_of(f), reverse=True)
             lines = []
             for f in items[:8]:
-                text = str(getattr(f, "fact", "") or "").strip()
+                text = self._fact_text(f)
                 if not text:
                     continue
-                subject = str(getattr(f, "subject", "") or "").strip()
-                # 旧昵称主语替换成“对方”，避免和角色英文名冲突
-                if subject and text.startswith(subject):
-                    text = "对方" + text[len(subject):]
                 lines.append("- " + text)
             if not lines:
                 return ""
@@ -377,6 +434,68 @@ class ContextManager:
             )
         except Exception as e:
             print(f"[Context] 用户档案注入失败（不影响对话）: {e}")
+            return ""
+
+    def _group_profiles_block(self, channel_id) -> str:
+        """B：本群所有可见成员的稳定档案快照，TTL 内固定。"""
+        if not (self.memory_enabled and self.memory is not None and channel_id):
+            return ""
+        now = time.time()
+        ttl = int(get("context.group_profiles_ttl_seconds", 3600) or 3600)
+        cached = self._group_profiles_cache.get(str(channel_id))
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+        try:
+            try:
+                group_msgs = self.memory.get_group_context(
+                    channel_id, limit=60,
+                    bot_name=self.persona_engine.display_name)
+            except TypeError:
+                group_msgs = self.memory.get_group_context(channel_id, limit=60)
+            members = {}
+            for item in group_msgs or []:
+                if item.get("is_bot"):
+                    continue
+                sid = str(item.get("speaker_id") or "").strip()
+                name = str(item.get("speaker") or sid).strip()
+                if sid and sid != "bot":
+                    members[sid] = name or sid
+            if not members:
+                return ""
+            limit = int(get("context.group_profiles_max_members", 8) or 8)
+            lines = []
+            for sid in sorted(members)[:limit]:
+                try:
+                    data = self.memory.list_semantic_facts(
+                        page=1, page_size=8, owner_id=sid, state="active")
+                    items = list(data.get("items") or [])
+                except Exception:
+                    items = []
+                if not items:
+                    continue
+                try:
+                    from backend.memory.forgetting import weight_of
+                    items.sort(key=lambda f: weight_of(f), reverse=True)
+                except Exception:
+                    pass
+                facts = []
+                for f in items:
+                    txt = self._fact_text(f)
+                    if txt and txt not in facts:
+                        facts.append(txt)
+                    if len(facts) >= 2:
+                        break
+                if facts:
+                    lines.append(f"- {members[sid]}：" + "；".join(facts))
+            if not lines:
+                return ""
+            text = ("【群友稳定档案｜系统记忆，不是你的经历，不要复述】\n"
+                    + "\n".join(lines))
+            self._group_profiles_cache[str(channel_id)] = (now, text)
+            print(f"[Context] 注入群友稳定档案: {len(lines)} 人")
+            return text
+        except Exception as e:
+            print(f"[Context] 群友档案注入失败（不影响对话）: {e}")
             return ""
 
     def _relationship_block(self, speaker_id, speaker_name, channel_type) -> str:
@@ -394,7 +513,8 @@ class ContextManager:
             if rel is None:
                 return ""
             from backend.relationship import render_relationship_block
-            text = render_relationship_block(rel, channel_type or "private")
+            text = render_relationship_block(rel, channel_type or "private",
+                                             compact=True)
             print("[Context] 关系: %s | %s | %d 条 | %.1f 小时"
                   % (rel.display, rel.level_cn, rel.msg_count, rel.hours))
             return text
@@ -441,14 +561,34 @@ class ContextManager:
             self._knowledge = None
         return self._knowledge
 
+    def _load_static_system(self) -> str:
+        """加载固定 system prompt；只对默认人格生效"""
+        try:
+            from backend.runtime_config import get_runtime
+            active = str(get_runtime().get("active.persona") or "shelwell_persona")
+            if active not in ("", "shelwell_persona"):
+                return ""
+            p = Path(__file__).resolve().parent.parent / "config" / "persona_prompts" / "shelwell_system.txt"
+            if not p.exists():
+                return ""
+            text = p.read_text(encoding="utf-8").strip()
+            if text:
+                print(f"[Context] 使用静态 system prompt: {len(text)} 字")
+            return text
+        except Exception as e:
+            print(f"[Context] 静态 system prompt 读取失败，回退动态拼接: {e}")
+            return ""
+
     def _refresh_persona(self):
         """runtime 人格变化时重建 PersonaEngine 和系统指令"""
         sig = self._persona_signature()
         if sig and sig != self._persona_key:
             try:
                 self.persona_engine = PersonaEngine()
+                self._static_system = self._load_static_system()
                 self.system_instruction = (
-                    self.OUTPUT_FORMAT + "\n\n" + self.persona_engine.prompt
+                    self._static_system
+                    or (self.OUTPUT_FORMAT + "\n\n" + self.persona_engine.prompt)
                 )
                 self._persona_key = sig
                 print("[Context] 人格已切换: " + sig)

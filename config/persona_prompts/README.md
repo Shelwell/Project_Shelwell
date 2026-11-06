@@ -7,7 +7,8 @@
 
 | 文件 | 类型 | 是否进 prompt |
 |---|---|---|
-| `shelwell_persona.yaml` | 人格定义 | 是（抽取字段后编译） |
+| `shelwell_system.txt` | 固定 system prompt（缓存友好版） | 是；默认人格优先读它 |
+| `shelwell_persona.yaml` | 人格定义 | 静态文件不存在时才动态编译 |
 | `shelwell_facts.yaml` | 短期知识/熟悉事物 | 是（`PersonaEngine` 注入） |
 | `shelwell_knowledge.jsonl` | 世界设定 RAG 分块 | 否（经 `knowledge_base.py` 检索注入） |
 | `shelwell_knowledge.md` | 知识源说明/分块原文 | 否（生成 jsonl 用） |
@@ -15,6 +16,8 @@
 | `code_artifact.md` | 世界观真相源长篇 | 否（素材） |
 
 ## 2. persona yaml 结构
+
+> 当前默认人格优先加载 `shelwell_system.txt`（固定 system prompt）。修改 `shelwell_persona.yaml` 不会自动改变 system，除非删除/重命名静态文件；这是为了保证前缀稳定和缓存复用。切换其他 persona 时回退动态编译。
 
 关键字段：
 

@@ -22,7 +22,7 @@ cd E:\Shelwell
 | `rebuild_index.py` | 重建情景向量/FTS 索引 | `python scripts/rebuild_index.py` |
 | `manage_memory.py` | 命令行查看/清理记忆 | `python scripts/manage_memory.py --help` |
 | `report_shadow.py` | 分析门禁 shadow 日志 | `python scripts/report_shadow.py` |
-| `set_ollama_env.ps1` | 给 NSSM 的 Ollama 服务写环境变量 | `powershell -File scripts/set_ollama_env.ps1` |
+| `set_ollama_env.ps1` | 给 NSSM 的 Ollama 服务写环境变量（q8 KV、FlashAttention、12 线程） | `powershell -File scripts/set_ollama_env.ps1` |
 | `start_all.ps1` | 一键启动服务/容器（无控制台时） | `powershell -File scripts/start_all.ps1` |
 | `ab_prompt_test.py` | 提示词 A/B 对比 | `python scripts/ab_prompt_test.py` |
 | `verify_round2.py` | 第二轮行为验证 | `python scripts/verify_round2.py` |
@@ -67,6 +67,12 @@ cd E:\Shelwell
 |---|---|
 | `test_vision.py` | 小图识别、缓存、限频、失败降级 |
 
+### 天气
+
+| 脚本 | 验证 |
+|---|---|
+| `test_weather.py` | 9 档时间、雪季、跨日固定、重启固定、温度范围 |
+
 ## 4. 全量回归
 
 ```powershell
@@ -75,7 +81,7 @@ $tests = @(
   "test_memory_retrieval", "test_memory_edit", "test_memory_delete",
   "test_auto_consolidate", "test_extractor_identity", "test_knowledge",
   "test_relationship", "test_gate_runner", "test_group_shadow",
-  "test_group_state", "test_vision"
+  "test_group_state", "test_vision", "test_weather"
 )
 foreach ($t in $tests) {
   .venv\Scripts\python.exe "scripts\$t.py"

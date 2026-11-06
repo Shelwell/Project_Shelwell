@@ -51,9 +51,10 @@ system1 = out1[0]["content"]
 last1 = out1[-1]["content"]
 
 check("第一条是 system", out1[0]["role"] == "system", out1[0]["role"])
-check("system 等于静态人格", system1 == cm.system_instruction,
+check("system 以静态人格开头", system1.startswith(cm.system_instruction),
       f"{len(system1)} vs {len(cm.system_instruction)}")
-check("动态内容不在 system 里", "冰美式" not in system1)
+check("C1 天气摘要进入 system", "【天气】" in system1)
+check("语义记忆不在 system 里", "冰美式" not in system1)
 check("动态内容在本轮 user 里", "冰美式" in last1, last1[:80])
 check("user 原文仍在", "在吗" in last1)
 
@@ -72,6 +73,7 @@ out3 = cm.prepare_context([{"role": "user", "content": "接话吗"}],
                           system_as_role=True)
 check("群上下文不在 system", "群里刚才在聊" not in out3[0]["content"])
 check("群上下文在 user 尾部", "群里刚才在聊" in out3[-1]["content"])
+check("群名单不带条数", "（1条）" not in out3[-1]["content"])
 check("当前发言者在 user 尾部", "当前发言者：小明" in out3[-1]["content"])
 
 # 图片消息：下沉不能破坏 images 字段

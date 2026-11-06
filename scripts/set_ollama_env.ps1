@@ -1,4 +1,4 @@
-﻿# scripts/set_ollama_env.ps1
+# scripts/set_ollama_env.ps1
 # Purpose: enable KV cache quantization + FlashAttention for the ShelwellOllama service.
 # Run as Administrator:
 #   powershell -ExecutionPolicy Bypass -File E:\Shelwell\scripts\set_ollama_env.ps1
@@ -8,6 +8,7 @@
 # Why:
 #   OLLAMA_KV_CACHE_TYPE=q8_0     KV cache 8-bit quantization, about half the VRAM
 #   OLLAMA_FLASH_ATTENTION=1      prerequisite for quantized KV, also cheaper long context
+#   OLLAMA_NUM_THREADS=12         use 12 of 16 CPU threads for CPU-offloaded layers
 
 param([switch]$DryRun)
 
@@ -27,7 +28,8 @@ $envList = @(
     "OLLAMA_MODELS=E:\Shelwell\Ollama_models",
     "OLLAMA_MAX_LOADED_MODELS=2",
     "OLLAMA_KV_CACHE_TYPE=q8_0",
-    "OLLAMA_FLASH_ATTENTION=1"
+    "OLLAMA_FLASH_ATTENTION=1",
+    "OLLAMA_NUM_THREADS=12"
 )
 
 Write-Host "Service : $service"
@@ -46,7 +48,12 @@ if ($LASTEXITCODE -ne 0) { throw "nssm set failed with exit code $LASTEXITCODE" 
 
 Write-Host ""
 Write-Host "Restarting service ..." -ForegroundColor Yellow
-Restart-Service $service -Force
+$st = (Get-Service $service).Status
+if ($st -eq "Running") {
+    Restart-Service $service -Force
+} else {
+    Start-Service $service
+}
 Start-Sleep -Seconds 4
 
 $status = (Get-Service $service).Status

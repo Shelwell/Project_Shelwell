@@ -196,8 +196,9 @@ out = cm.prepare_context([{"role": "user", "content": "在吗"}],
                          speaker_id="1", speaker_name="小明",
                          channel_type="private", system_as_role=True)
 check("关系段不在 system 里", "【关系｜" not in out[0]["content"])
-check("关系段在本轮 user 尾部", "【关系｜" in out[-1]["content"])
-check("等级由代码写入", "等级：陌生" in out[-1]["content"])
+check("D 段在本轮 user 尾部", "【当前发言人】" in out[-1]["content"])
+check("等级由代码写入", "信赖等级：陌生" in out[-1]["content"])
+check("D 段不暴露时长/条数", "直接互动" not in out[-1]["content"])
 check("原始消息保留", "在吗" in out[-1]["content"])
 
 # ---------- 7. MemoryService 计数钩子 ----------

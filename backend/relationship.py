@@ -531,7 +531,8 @@ class RelationshipStore:
         return len(agg)
 
 
-def render_relationship_block(rel: Relationship, channel_type: str = "private") -> str:
+def render_relationship_block(rel: Relationship, channel_type: str = "private",
+                             compact: bool = False) -> str:
     """生成本轮注入的【关系】段（动态内容，放 user 尾部，不破坏前缀缓存）"""
     if rel is None:
         return ""
@@ -547,6 +548,12 @@ def render_relationship_block(rel: Relationship, channel_type: str = "private") 
                                              rel.direct_count)
     is_group = (channel_type == "group")
     allow, note = tsundere_policy(rel.level, is_group)
+    if compact:
+        # D 段：只给当前发言人和信赖等级，不暴露时长/条数
+        return (
+            "【当前发言人】%s｜信赖等级：%s｜傲娇/毒舌/玩梗：%s%s"
+            % (name, rel.level_cn, allow, note)
+        )
     return (
         "【关系｜系统判定，勿自行升降】当前说话人：%s｜%s｜等级：%s"
         "｜傲娇/毒舌/玩梗：%s%s"

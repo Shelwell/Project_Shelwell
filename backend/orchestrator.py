@@ -100,7 +100,8 @@ class Orchestrator:
              speaker_id: str = None, channel_type: str = None, channel_id: str = None,
              speaker_name: str = "", speaker_hint: str = "", quote_hint: str = "",
              keep_alive: str = None, direct: bool = True,
-             session_summary: str = "") -> dict:
+             session_summary: str = "", resident_group_id: str = "",
+             resident_group_summary: str = "") -> dict:
         """
         执行一次完整对话。
 
@@ -132,6 +133,8 @@ class Orchestrator:
             channel_id=channel_id,
             speaker_hint=speaker_hint, quote_hint=quote_hint,
             speaker_name=speaker_name,
+            resident_group_id=resident_group_id,
+            resident_group_summary=resident_group_summary,
         )
         try:
             # 人格指令一律用独立 system 消息承载：Ollama 的 chat template

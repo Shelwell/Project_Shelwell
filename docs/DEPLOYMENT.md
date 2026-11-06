@@ -37,10 +37,12 @@ docker start napcat
 ## 3. Ollama
 
 - 模型目录：`Ollama_models/`（或由 `OLLAMA_MODELS` 指定）
+- 天气状态：`memory/weather_state.json`（运行时自动生成；删除会重新生成当天天气）
 - 环境变量（NSSM 服务）：
   - `OLLAMA_HOST=0.0.0.0:11434`（如需要局域网访问）
   - `OLLAMA_MODELS=E:\Shelwell\Ollama_models`
   - `OLLAMA_KEEP_ALIVE=0.5h`（与 `generation.keep_alive` 配合）
+  - `OLLAMA_NUM_THREADS=12`（16 核 CPU，留 4 核给系统/控制台）
 - 修改服务环境变量：
 
 ```powershell

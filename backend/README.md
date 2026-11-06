@@ -32,6 +32,7 @@ backend/memewiki/              梗百科
 | `group_state.py` | 最小群聊状态机（shadow） | `GroupStateMachine.observe(...)` / `finalize(...)` |
 | `knowledge_base.py` | 世界设定 RAG | `search(...)` / `add/ingest` / `stats` |
 | `vision.py` | 图片识别、缓存、限频 | `VisionPipeline.describe(...)` |
+| `weather.py` | 持久化天气/温度/9 档时间 | `WeatherService.current()` / `summary()` / `environment()` |
 | `reply_format.py` | 清洗、短回复合并、气泡拆分 | `split_bubbles(...)` / `strip_silent_marker` |
 | `session_summary.py` | 会话压缩摘要（质量模型，token 探针触发） | `summarize_history(...)` |
 | `orchestrator.py` | L4：建上下文 → 调模型 → 清洗 → 归档 | `Orchestrator.chat(...)` |
@@ -73,6 +74,10 @@ prepare_context(messages, current_query=None, session_id=None,
 - `system_as_role=True` 时生成独立 system 消息；否则合并进首条 user
 - system 前缀冻结：人格、固定规则放 system；动态记忆、关系、知识、时间下沉到本轮 user 尾部
 - `session_summary` 是 token 探针触发后的早期对话摘要，动态注入，不写 system
+- 天气摘要拼进 C1 摘要；当前日期/天气/温度/时间档放在 D 尾部
+- 顺序：A system + B 群友档案 + C1 摘要/天气 → C2 历史 → D 当前发言人/环境 → E 当前句
+- 群友档案按 TTL 冻结；群历史在首次进群时从归档生成 C1，并按估算 token 在接近上限时总结
+- 默认人格优先加载 `config/persona_prompts/shelwell_system.txt` 作为固定 system；切换其他人格才回退动态编译
 - 具体拼接顺序和来源过滤见 [memory/README.md](memory/README.md) 与 `docs/memory_design.md`
 
 ### 3.3 `ContextManager.archive_turn()`
