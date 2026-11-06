@@ -29,7 +29,7 @@ def ts_at(hour, minute=0, second=0):
 
 def gate(**over):
     cfg = {"active_hours": ["19:00-24:00"], "quiet_hours": ["00:30-09:00"],
-           "name_aliases": ["Shelwell", "希儿", "小希", "Shel"]}
+           "name_aliases": ["西尔维娅", "西儿", "小西", "维娅"]}
     cfg.update(over)
     return GroupGate(cfg, interest_terms=["明日方舟", "火锅", "成都"])
 
@@ -45,17 +45,17 @@ g = gate()
 d = g.observe(msg("在吗", ts_at(3), at_me=True))          # 静默时段也应回
 check("@我 无视静默时段", d.respond and d.reason == "at_me", d.to_dict())
 g = gate()
-check("称呼命中（Shel）", g.observe(msg("Shel 你在吗", ts_at(21))).reason == "at_me")
-check("中文称呼命中（小希）", g.observe(msg("小希来看看", ts_at(21))).reason == "at_me")
-check("英文子串不误伤（sheep）",
-      g.observe(msg("the sheep is cute", ts_at(21))).reason != "at_me")
+check("称呼命中（西尔维娅）", g.observe(msg("西尔维娅 你在吗", ts_at(21))).reason == "at_me")
+check("中文称呼命中（西儿）", g.observe(msg("西儿来看看", ts_at(21))).reason == "at_me")
+check("普通消息不误判",
+      g.observe(msg("今天天气不错", ts_at(21))).reason != "at_me")
 
 print("\n[2] 回复我 = 明确对话")
 g = gate()
-d = g.observe(msg("刚才那个挺好", ts_at(21), reply_to_sender="Shelwell"))
+d = g.observe(msg("刚才那个挺好", ts_at(21), reply_to_sender="西尔维娅"))
 check("引用我的消息", d.respond and d.reason == "reply_to_me", d.to_dict())
 g = gate()
-d = g.observe(msg("刚才那个挺好", ts_at(3), reply_to_sender="Shelwell"))
+d = g.observe(msg("刚才那个挺好", ts_at(3), reply_to_sender="西尔维娅"))
 check("引用我在深夜也回", d.respond, d.to_dict())
 
 print("\n[3] 不该接的情况")

@@ -25,7 +25,8 @@ class UsageTracker:
 
     def record(self, provider: str, model: str, ok: bool,
                prompt_tokens: int = 0, completion_tokens: int = 0,
-               elapsed: float = 0.0, error: str = ""):
+               elapsed: float = 0.0, error: str = "",
+               prompt_eval_duration: int = 0, eval_duration: int = 0):
         rec = {
             "ts": time.time(),
             "provider": provider,
@@ -35,6 +36,8 @@ class UsageTracker:
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
             "elapsed": round(elapsed, 2),
+            "prompt_eval_duration": prompt_eval_duration,
+            "eval_duration": eval_duration,
             "error": error,
         }
         with _LOCK:

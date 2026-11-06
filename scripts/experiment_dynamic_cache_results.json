@@ -1,0 +1,21 @@
+{
+  "system_chars": 3498,
+  "model": "qwen3.8:27b",
+  "num_ctx": 16384,
+  "method": "same static system; A: dynamic block + query on last user, history stores raw query; B: raw query only. First turn cold, later turns show cache behavior.",
+  "conditions": {
+    "A_dynamic": [
+      {"turn": 1, "prompt_eval_count": 2620, "prompt_eval_seconds": 44.69, "wall_seconds": 70.3},
+      {"turn": 2, "prompt_eval_count": 2641, "prompt_eval_seconds": 13.43, "wall_seconds": 13.5},
+      {"turn": 3, "prompt_eval_count": 2661, "prompt_eval_seconds": 13.23, "wall_seconds": 13.3},
+      {"turn": 4, "prompt_eval_count": 2685, "prompt_eval_seconds": 12.36, "wall_seconds": 12.4}
+    ],
+    "B_raw": [
+      {"turn": 1, "prompt_eval_count": 2461, "prompt_eval_seconds": 6.55, "wall_seconds": 6.6},
+      {"turn": 2, "prompt_eval_count": 2482, "prompt_eval_seconds": 2.43, "wall_seconds": 2.5},
+      {"turn": 3, "prompt_eval_count": 2502, "prompt_eval_seconds": 2.47, "wall_seconds": 2.5},
+      {"turn": 4, "prompt_eval_count": 2525, "prompt_eval_seconds": 2.52, "wall_seconds": 2.5}
+    ]
+  },
+  "conclusion": "Dynamic block on the last user breaks full-prefix reuse. With the same system and a slightly larger prompt, dynamic turns remain around 12-13s of prompt eval, while raw turns drop to ~2.5s."
+}

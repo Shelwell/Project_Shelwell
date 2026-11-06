@@ -29,9 +29,23 @@ class SemanticStore:
         self._init_db()
 
         self.client = chromadb.PersistentClient(path=chroma_dir)
+        self.collection_name = collection_name
         self.collection = self.client.get_or_create_collection(
             name=collection_name, metadata={"hnsw:space": "cosine"})
         self.embedder = Embedder()
+
+    def _ensure_collection(self):
+        """集合被外部删除后句柄会失效，这里自动重建"""
+        try:
+            self.collection.count()
+            return
+        except Exception:
+            pass
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name, metadata={"hnsw:space": "cosine"})
+        except Exception as e:
+            print(f"[Semantic] 重建 collection 失败: {e}")
 
     # ---------- SQLite ----------
 
@@ -144,6 +158,7 @@ class SemanticStore:
         return True
 
     def _index_vector(self, fact: SemanticFact):
+        self._ensure_collection()
         """把事实文本向量化写入 ChromaDB"""
         vec = self.embedder.embed_safe(fact.fact)
         if not vec:
@@ -210,6 +225,7 @@ class SemanticStore:
 
     def search(self, query: str, top_k: int = 5,
                min_similarity: float = 0.4, owner_id: str = "") -> list:
+        self._ensure_collection()
         """
         检索语义事实：向量相似度 × strength 加权排序。
         owner_id 为空时不过滤 owner。
@@ -328,6 +344,7 @@ class SemanticStore:
         return n
 
     def stats(self) -> dict:
+        self._ensure_collection()
         with self._connect() as con:
             total = con.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
             by_state = {r[0]: r[1] for r in con.execute(

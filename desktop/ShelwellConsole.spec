@@ -46,13 +46,17 @@ a = Analysis(
         "backend.config_loader",
         "backend.runtime_config",
         "desktop.pages.persona_page",
+        "desktop.pages.knowledge_page",
         "desktop.pages.model_page",
         "desktop.pages.api_page",
         "desktop.pages.qq_page",
         "desktop.pages.plugin_page",
         "desktop.pages.memory_page",
+        "desktop.pages.relationship_page",
         "sqlite3", "_sqlite3",
         "chromadb",
+        "backend.relationship",
+        "backend.knowledge_base",
         "backend.memory",
         "backend.memory.models",
         "backend.memory.archive",
@@ -84,6 +88,8 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
+    # 启停 Windows 服务需要管理员权限：启动时请求 UAC（右键运行也可）
+    uac_admin=True,
     icon=None,
 )
 

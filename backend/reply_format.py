@@ -107,12 +107,27 @@ def _split_sentences(line: str, limit: int) -> list:
     return out
 
 
-def split_bubbles(text: str, limit: int = 40, max_bubbles: int = 3) -> list:
+def _merge_one(pieces: list) -> str:
+    """把多段合并成一条：段间用标点衔接，绝不保留换行（QQ 端按换行拆条）"""
+    out = ""
+    for p in pieces:
+        p = p.strip()
+        if not p:
+            continue
+        if out and not out[-1] in "，。！？!?…~、；;：":
+            out += "，"
+        out += p
+    return out
+
+
+def split_bubbles(text: str, limit: int = 40, max_bubbles: int = 3,
+                  single_max: int = 0) -> list:
     """
     把模型输出切成 QQ 气泡列表。
 
-    顺序：先按换行（模型自己的断句）→ 超长行按标点再切 → 超出上限的部分并入最后一条，
-    保证不丢内容。返回的每一项都应是独立的一条消息。
+    顺序：先按换行（模型自己的断句）→ 超长行按标点再切 → 超出上限均衡分配。
+    single_max > 0 时，若整条回复字数不超过它，强制合并成一条（默认行为：
+    大多数对话只发一条，避免"每次都固定三条"）。
     """
     text = normalize(text)
     if not text:
@@ -127,6 +142,10 @@ def split_bubbles(text: str, limit: int = 40, max_bubbles: int = 3) -> list:
             pieces.append(line)
         else:
             pieces.extend(_split_sentences(line, limit))
+
+    # 短回复合并成一条
+    if single_max and len("".join(pieces)) <= single_max:
+        return [_merge_one(pieces)]
 
     if len(pieces) > max_bubbles:
         # 内容超出气泡容量：按段数均衡分配到 max_bubbles 条，避免最后一条过长，

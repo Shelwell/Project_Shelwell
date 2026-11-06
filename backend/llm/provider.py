@@ -28,6 +28,7 @@ def chat(messages: list, keep_alive: str = None, model_override: str = None) -> 
     provider = (rt.get("active.provider") or "ollama").strip()
     model = model_override or rt.get("active.model") or ""
     t0 = time.time()
+    _LAST_USAGE["data"] = {}
     try:
         if provider == "ollama":
             text = _chat_ollama(messages, rt, keep_alive, model_override)
@@ -44,8 +45,15 @@ def chat(messages: list, keep_alive: str = None, model_override: str = None) -> 
         prompt_tokens=usage.get("prompt_tokens", 0),
         completion_tokens=usage.get("completion_tokens", 0),
         elapsed=time.time() - t0,
+        prompt_eval_duration=usage.get("prompt_eval_duration", 0),
+        eval_duration=usage.get("eval_duration", 0),
     )
     return text
+
+
+def get_last_usage() -> dict:
+    """最近一次调用的 token/耗时元数据（供 token 探针使用）"""
+    return dict(_LAST_USAGE.get("data") or {})
 
 
 def _gen_options(rt) -> dict:
@@ -59,7 +67,28 @@ def _gen_options(rt) -> dict:
     num_predict = rt.get("generation.num_predict")
     if num_predict is None:
         num_predict = get("generation.num_predict", 1024)
-    return {"temperature": temp, "num_ctx": num_ctx, "num_predict": num_predict}
+    opts = {"temperature": temp, "num_ctx": num_ctx, "num_predict": num_predict}
+
+    # 可选参数：只在显式配置时下发，避免用默认值改变现有行为
+    top_p = rt.get("generation.top_p")
+    if top_p is None:
+        top_p = get("generation.top_p", None)
+    if top_p is not None:
+        opts["top_p"] = float(top_p)
+    repeat = rt.get("generation.repeat_penalty")
+    if repeat is None:
+        repeat = get("generation.repeat_penalty", None)
+    if repeat is not None:
+        opts["repeat_penalty"] = float(repeat)
+    return opts
+
+
+def _runtime_value(rt, key: str, default):
+    """runtime 优先，回退 app_config"""
+    v = rt.get(key)
+    if v is None:
+        return get(key, default)
+    return v
 
 
 def _chat_ollama(messages: list, rt, keep_alive: str = None,
@@ -67,20 +96,18 @@ def _chat_ollama(messages: list, rt, keep_alive: str = None,
     model = model_override or rt.get("active.model") or get("model.base", "qwen3.5:9b")
     url = f"{get('ollama.url', 'http://localhost:11434')}/api/chat"
     opts = _gen_options(rt)
-    # 未指定时用配置默认值（默认 10m）
+    # 调用方未指定时：runtime 的 keep_alive 优先，其次 app_config
     if keep_alive is None:
-        keep_alive = get("generation.keep_alive", "10m")
+        keep_alive = _runtime_value(rt, "generation.keep_alive",
+                                    get("generation.keep_alive", "10m"))
     payload = {
         "model": model,
         "messages": messages,
-        "think": get("generation.think", False),
+        "think": bool(_runtime_value(rt, "generation.think",
+                                     get("generation.think", False))),
         "stream": False,
         "keep_alive": keep_alive,
-        "options": {
-            "num_ctx": opts["num_ctx"],
-            "temperature": opts["temperature"],
-            "num_predict": opts["num_predict"],
-        },
+        "options": opts,
     }
     try:
         resp = requests.post(url, json=payload, timeout=get("ollama.chat_timeout", 300))
@@ -88,7 +115,14 @@ def _chat_ollama(messages: list, rt, keep_alive: str = None,
         raise ProviderError(f"ollama 连接失败: {e}") from e
     if resp.status_code != 200:
         raise ProviderError(f"ollama status={resp.status_code} detail={resp.text[:200]}")
-    return resp.json().get("message", {}).get("content", "")
+    data = resp.json()
+    _LAST_USAGE["data"] = {
+        "prompt_tokens": int(data.get("prompt_eval_count", 0) or 0),
+        "completion_tokens": int(data.get("eval_count", 0) or 0),
+        "prompt_eval_duration": int(data.get("prompt_eval_duration", 0) or 0),
+        "eval_duration": int(data.get("eval_duration", 0) or 0),
+    }
+    return data.get("message", {}).get("content", "")
 
 
 def _chat_openai(messages: list, rt, model_override: str = None) -> str:

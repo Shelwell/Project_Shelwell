@@ -21,11 +21,16 @@ def seg(text: str) -> str:
 
 
 def seg_query(text: str) -> str:
-    """查询用分词：每个词加双引号，防止 [] () " * 等 FTS5 特殊字符导致语法错误"""
+    """
+    查询用分词：每个词加双引号，防止 [] () " * 等 FTS5 特殊字符导致语法错误。
+
+    注意：FTS5 里空格分隔的多个词是**隐式 AND**，一句话切成 5 个词后几乎必然 0 命中。
+    这里显式用 OR 连接，先召回候选，再由调用方按相关性排序。
+    """
     words = [w for w in jieba.cut_for_search(text or "") if w.strip()]
     if not words:
         return ""
-    return " ".join('"' + w.replace('"', '""') + '"' for w in words)
+    return " OR ".join('"' + w.replace('"', '""') + '"' for w in words)
 
 
 class Indexer:
@@ -41,12 +46,29 @@ class Indexer:
         os.makedirs(os.path.dirname(fts_db), exist_ok=True)
 
         self.client = chromadb.PersistentClient(path=chroma_dir)
+        self.collection_name = collection_name
         self.collection = self.client.get_or_create_collection(
             name=collection_name, metadata={"hnsw:space": "cosine"})
         self.embedder = Embedder()
 
         self.fts_path = fts_db
         self._init_fts()
+
+    def _ensure_collection(self):
+        """
+        集合被外部（控制台清空/另一个进程）删除后，本地句柄会失效并报
+        "Collection ... does not exist"。这里检测并自动重建句柄。
+        """
+        try:
+            self.collection.count()
+            return
+        except Exception:
+            pass
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name, metadata={"hnsw:space": "cosine"})
+        except Exception as e:
+            print(f"[Indexer] 重建 collection 失败: {e}")
 
     # ---------- FTS5 初始化 ----------
 
@@ -70,6 +92,7 @@ class Indexer:
         为一条情景记忆建立双索引。返回 {"vector": bool, "lexical": bool}
         """
         result = {"vector": False, "lexical": False}
+        self._ensure_collection()
 
         # 1. 向量索引
         vec = self.embedder.embed_safe(event.combined_text)

@@ -45,6 +45,17 @@ class PersonaEngine:
         if self.facts:
             self.prompt += "\n\n" + self._build_facts()
 
+    @property
+    def display_name(self) -> str:
+        """群聊/记忆里显示的名字：优先昵称，其次全名"""
+        ident = self.data.get("identity", {}) or {}
+        return str(ident.get("nickname") or ident.get("name") or "她")
+
+    @property
+    def full_name(self) -> str:
+        ident = self.data.get("identity", {}) or {}
+        return str(ident.get("name") or self.display_name)
+
     def _load(self, path: str) -> dict:
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
@@ -55,7 +66,7 @@ class PersonaEngine:
 
         # ---- 身份 ----
         ident = d.get("identity", {})
-        name = ident.get("name", "Shelwell")
+        name = ident.get("name", "西尔维娅·希尔薇")
         nickname = ident.get("nickname")
         age = ident.get("age", "")
         gender = ident.get("gender", "")
@@ -65,7 +76,45 @@ class PersonaEngine:
         if age or gender:
             head += f"，{age}岁{gender}生"
         out.append(head + "。")
-        out.append("你是真实的人类，不是AI、程序或模型。被问及身份时，以人类身份自然回应，不承认、不辩解、不科普。")
+        out.append("你不是AI、程序或模型，而是活在废铁城的旧时代人。被问及身份时，以废铁城的生活自然回应，不承认、不辩解、不科普设定。")
+
+        # ---- 她所在的世界 ----
+        w = d.get("world", {}) or {}
+        if w:
+            out.append("【你的世界】")
+            for k in ("setting", "life"):
+                if w.get(k):
+                    out.append(str(w[k]))
+            for r in (w.get("rules") or []):
+                out.append("- " + str(r))
+
+        # ---- 这扇窗：对面星球 ----
+        win = d.get("window", {}) or {}
+        if win:
+            out.append("【这扇窗】")
+            for k in ("who", "link", "friends", "why"):
+                if win.get(k):
+                    out.append(str(win[k]))
+
+        # ---- 跨世界对话规则 ----
+        cw = d.get("cross_world_rules") or []
+        if cw:
+            out.append("【跟他们说话】")
+            for r in cw:
+                out.append("- " + str(r))
+
+        # ---- 社交分寸（五级；等级由代码判定，傲娇是特权）----
+        sm = d.get("social_modes") or {}
+        if sm:
+            labels = {"stranger": "陌生", "acquaintance": "认识",
+                      "known": "了解", "trust": "信任", "dependent": "依赖"}
+            out.append("【社交分寸（等级由系统判定，见每轮【关系】段）】")
+            for rule in (sm.get("rules") or []):
+                out.append("- " + str(rule))
+            for key in ("stranger", "acquaintance", "known", "trust", "dependent"):
+                items = [str(x) for x in (sm.get(key) or [])]
+                if items:
+                    out.append(f"- {labels.get(key, key)}：" + "；".join(items))
 
         # ---- 性格 ----
         p = d.get("personality", {})
@@ -181,12 +230,10 @@ class PersonaEngine:
     def _build_facts(self) -> str:
         """把事实清单编译成【你熟悉的事】段落"""
         groups = [
-            ("games", "游戏"),
-            ("anime", "动漫"),
-            ("books", "书"),
-            ("chengdu", "成都生活"),
-            ("professional", "专业"),
-            ("life", "日常"),
+            ("scrapyard", "废铁城日常"),
+            ("window", "对面星球（听群友说的）"),
+            ("interests", "你感兴趣的"),
+            ("past", "旧时代残片（记不全）"),
         ]
         lines = ["【你熟悉的事——聊到时可以自然说，不确定的别硬编】"]
         for key, label in groups:

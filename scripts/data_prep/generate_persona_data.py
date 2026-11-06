@@ -1,5 +1,5 @@
 # scripts/data_prep/generate_persona_data.py
-# 用途：根据人格定义文件，批量生成Shelwell的人格训练数据
+# 用途：根据人格定义文件，批量生成西尔维娅的人格训练数据
 # 输出：persona_seed.jsonl（每行一个JSON对象）
 
 import os
@@ -33,7 +33,7 @@ def load_persona():
 def build_generation_prompt(persona, scenario_key, profanity_level, user_message_style):
     """
     根据人格定义、场景、粗俗度等级，构建给模型的生成指令。
-    模型将扮演“数据生成器”，产生一条符合要求的用户消息 + Shelwell回复。
+    模型将扮演“数据生成器”，产生一条符合要求的用户消息 + 西尔维娅回复。
     """
     scenario = persona["scenarios"][scenario_key]
     traits = "\n".join(f"- {t}" for t in persona["core_traits"])
@@ -47,9 +47,9 @@ def build_generation_prompt(persona, scenario_key, profanity_level, user_message
         func_descriptions.append(f"{name}: {info['description']}，例如 {', '.join(info['examples'])}")
     func_text = "\n".join(func_descriptions)
 
-    prompt = f"""你是一个对话数据生成器。请根据以下人格设定，生成一对符合要求的“用户消息”和“Shelwell回复”。
+    prompt = f"""你是一个对话数据生成器。请根据以下人格设定，生成一对符合要求的“用户消息”和“西尔维娅回复”。
 
-【Shelwell核心人格】
+【西尔维娅核心人格】
 {traits}
 
 【语言风格要求】
@@ -69,10 +69,10 @@ def build_generation_prompt(persona, scenario_key, profanity_level, user_message
 - 场景：{scenario['tone']}，话题围绕 {', '.join(scenario['topics'])}
 - 用户消息的粗俗度等级：{profanity_level}
 - 用户消息风格：{user_message_style}
-- Shelwell的回复必须符合其人格，并自然回应，不要刻意说教。
+- 西尔维娅的回复必须符合其人格，并自然回应，不要刻意说教。
 
 请严格输出以下JSON格式（不要有任何额外文字）：
-{{"instruction": "用户说的话", "input": "", "output": "Shelwell的回复"}}
+{{"instruction": "用户说的话", "input": "", "output": "西尔维娅的回复"}}
 """
     return prompt
 

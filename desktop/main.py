@@ -2,7 +2,9 @@
 # 职责：Shelwell 桌面控制台（PySide6）
 # 入口：python desktop/main.py
 
+import ctypes
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
@@ -11,6 +13,11 @@ from PySide6.QtWidgets import (
     QStackedWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGridLayout, QGroupBox, QTextEdit, QComboBox, QFrame, QMessageBox,
 )
+
+# 允许直接运行 `python desktop/main.py`
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from desktop.services import ROOT
 if str(ROOT) not in sys.path:
@@ -24,6 +31,44 @@ from desktop.pages.api_page import ApiPage
 from desktop.pages.qq_page import QQPage
 from desktop.pages.plugin_page import PluginPage
 from desktop.pages.memory_page import MemoryPage
+from desktop.pages.knowledge_page import KnowledgePage
+from desktop.pages.relationship_page import RelationshipPage
+from desktop.pages.trace_page import TracePage
+
+
+# ---------------- 管理员权限 ----------------
+# 启停 Windows 服务需要管理员权限；打包版通过 manifest（uac_admin）在启动时请求，
+# 源码运行则由下面的 relaunch 逻辑自行提权重启。
+
+def is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_as_admin() -> bool:
+    """以管理员身份重启自己；成功返回 True（调用方应退出当前进程）"""
+    try:
+        if getattr(sys, "frozen", False):
+            exe = sys.executable
+            params = " ".join(f'"{a}"' for a in sys.argv[1:])
+            workdir = str(Path(sys.executable).resolve().parent)
+        else:
+            # 源码运行：用 -m 以包方式启动，工作目录必须是项目根
+            exe = sys.executable
+            params = "-m desktop.main " + " ".join(
+                f'"{a}"' for a in sys.argv[1:])
+            workdir = str(ROOT)
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", exe, params, workdir, 1)
+        return rc > 32   # >32 表示成功启动
+    except Exception as e:
+        print(f"[Console] 提权失败: {e}")
+        return False
+
+
+ADMIN = is_admin()
 
 # ---------------- 首页：启动 + 服务状态 ----------------
 
@@ -41,6 +86,26 @@ class HomePage(QWidget):
         sub.setAlignment(Qt.AlignCenter)
         sub.setStyleSheet("color: #888;")
         layout.addWidget(sub)
+
+        # 权限状态：启停服务必须管理员
+        self.lab_admin = QLabel()
+        self.lab_admin.setAlignment(Qt.AlignCenter)
+        if ADMIN:
+            self.lab_admin.setText("运行权限：管理员 ✓")
+            self.lab_admin.setStyleSheet("color:#2a8;font-size:12px;")
+        else:
+            self.lab_admin.setText("运行权限：普通用户 —— 启动/停止服务需要管理员权限")
+            self.lab_admin.setStyleSheet("color:#c60;font-size:12px;")
+        layout.addWidget(self.lab_admin)
+
+        if not ADMIN:
+            row = QHBoxLayout()
+            btn_elev = QPushButton("以管理员身份重启")
+            btn_elev.clicked.connect(self.relaunch_admin)
+            row.addStretch()
+            row.addWidget(btn_elev)
+            row.addStretch()
+            layout.addLayout(row)
 
         # 启动按钮
         start_row = QHBoxLayout()
@@ -137,7 +202,30 @@ class HomePage(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
 
+    def _need_admin(self) -> bool:
+        """需要管理员但当前不是 → 提示并以管理员重启"""
+        if ADMIN:
+            return False
+        r = QMessageBox.question(
+            self, "需要管理员权限",
+            "启动/停止 Windows 服务需要管理员权限。\n\n是否以管理员身份重启控制台？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if r == QMessageBox.Yes:
+            self.relaunch_admin()
+        return True
+
+    def relaunch_admin(self):
+        if relaunch_as_admin():
+            QApplication.instance().quit()
+        else:
+            QMessageBox.warning(
+                self, "提权失败",
+                "没能以管理员身份启动（可能取消了 UAC）。\n"
+                "可以右键“以管理员身份运行”本程序，或从源码运行时用管理员终端。")
+
     def start_all(self):
+        if self._need_admin():
+            return
         r = QMessageBox.question(
             self, "确认", "确定启动全部 Shelwell 服务？",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -156,6 +244,8 @@ class HomePage(QWidget):
         self.refresh()
 
     def stop_all(self):
+        if self._need_admin():
+            return
         r = QMessageBox.question(
             self, "确认", "确定停止全部 Shelwell 服务？\nQQ 对话将中断。",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -214,6 +304,8 @@ class HomePage(QWidget):
             run_async(self, services.read_log, self.log_view.setPlainText, name, 150)
 
     def _restart(self, name):
+        if self._need_admin():
+            return
         run_async(self, services.restart_service, lambda _: self.refresh(), name)
 
     def _restart_napcat(self):
@@ -233,7 +325,8 @@ class HomePage(QWidget):
 
 # ---------------- 主窗口 ----------------
 
-PAGES = ["首页", "人格管理", "记忆管理", "模型切换", "插件管理", "QQ 账号", "API 接入"]
+PAGES = ["首页", "人格管理", "知识库", "记忆管理", "关系", "模型切换", "调试",
+         "插件管理", "QQ 账号", "API 接入"]
 
 
 class MainWindow(QMainWindow):
@@ -263,13 +356,17 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.home_page = HomePage()
         self.persona_page = PersonaPage()
+        self.knowledge_page = KnowledgePage()
         self.memory_page = MemoryPage()
+        self.relationship_page = RelationshipPage()
         self.model_page = ModelPage()
+        self.trace_page = TracePage()
         self.plugin_page = PluginPage()
         self.qq_page = QQPage()
         self.api_page = ApiPage()
-        for w in (self.home_page, self.persona_page, self.memory_page, self.model_page,
-                  self.plugin_page, self.qq_page, self.api_page):
+        for w in (self.home_page, self.persona_page, self.knowledge_page,
+                  self.memory_page, self.relationship_page, self.model_page,
+                  self.trace_page, self.plugin_page, self.qq_page, self.api_page):
             self.stack.addWidget(w)
         layout.addWidget(self.stack, 1)
 
@@ -281,9 +378,20 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(idx)
         if PAGES[idx] == "首页":
             self.home_page.refresh()
+        elif PAGES[idx] == "知识库":
+            self.knowledge_page.refresh()
+        elif PAGES[idx] == "关系":
+            self.relationship_page.reload()
+        elif PAGES[idx] == "调试":
+            self.trace_page.reload()
 
 
 def main():
+    # 启停 Windows 服务需要管理员权限：
+    #   打包版由 exe manifest（uac_admin）在启动时请求 UAC；
+    #   源码运行则在这里自动提权重启，避免“停止全部服务”静默失败。
+    if not ADMIN and relaunch_as_admin():
+        return
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     win = MainWindow()

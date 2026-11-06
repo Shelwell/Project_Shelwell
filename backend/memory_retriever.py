@@ -9,7 +9,7 @@ from backend.memory.service import MemoryService
 
 class MemoryRetriever:
     """
-    Shelwell 的长期记忆管理器
+    西尔维娅的长期记忆管理器
 
     存储分两层：
     1. 情景记忆：JSONL 权威归档 + ChromaDB 向量索引 + SQLite FTS5 关键词索引
@@ -39,14 +39,20 @@ class MemoryRetriever:
 
     # ============ 对外接口 ============
 
+    @property
+    def relationship(self):
+        """关系等级存储（由 MemoryService 持有，随归档消息自动累加）"""
+        return getattr(self._svc, "relationship", None)
+
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    speaker_id: str = "", channel_type: str = "",
-                   channel_id: str = "", speaker_name: str = ""):
+                   channel_id: str = "", speaker_name: str = "",
+                   direct: bool = None):
         """将一轮对话写入长期记忆（归档 + 同步索引）"""
         return self._svc.add_memory(
             user_msg, ai_msg, session_id=session_id,
             speaker_id=speaker_id, channel_type=channel_type, channel_id=channel_id,
-            speaker_name=speaker_name,
+            speaker_name=speaker_name, direct=direct,
         )
 
     def search(self, query: str, top_k: int = None, min_similarity: float = None,
@@ -73,9 +79,11 @@ class MemoryRetriever:
             "jobs": s["jobs"],
         }
 
-    def get_group_context(self, channel_id: str, limit: int = 15) -> list:
+    def get_group_context(self, channel_id: str, limit: int = 15,
+                          bot_name: str = "她") -> list:
         """拉取群聊最近 N 条消息作为上下文"""
-        return self._svc.get_group_context(channel_id, limit=limit)
+        return self._svc.get_group_context(channel_id, limit=limit,
+                                           bot_name=bot_name)
 
     # ============ 语义记忆 ============
 

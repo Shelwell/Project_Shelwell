@@ -56,6 +56,8 @@ class MemoryService:
         self.archive = Archive(history_dir=archive_dir)
         self.indexer = Indexer(chroma_dir=chroma_dir, fts_db=fts_db)
         self.jobs = JobQueue(db_path=jobs_db)
+        # 关系等级：只按归档消息计数，模型无权参与判定
+        self.relationship = self._init_relationship(archive_dir)
         # 语义记忆（懒加载，失败降级为无语义）
         self._semantic = None
         self._semantic_dir = chroma_dir
@@ -75,25 +77,57 @@ class MemoryService:
         if auto_worker:
             self.start_worker()
 
+    def _init_relationship(self, archive_dir):
+        """关系等级存储：默认路径读配置；测试用临时归档时放到同级 index 下"""
+        try:
+            if not get("relationship.enabled", True):
+                return None
+            from backend.relationship import RelationshipStore
+            if archive_dir is None:
+                store = RelationshipStore()
+                # 首次建库从归档回填，升级后不会把老朋友当陌生人
+                store.ensure_backfill(self.archive)
+                return store
+            db = Path(self.archive.history_dir).parent / "index" / "relationships.sqlite3"
+            return RelationshipStore(db_path=str(db))
+        except Exception as e:
+            print(f"[Memory] 关系等级存储初始化失败，降级: {e}")
+            return None
+
     # ============ 对外接口（兼容旧 MemoryRetriever） ============
 
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    score: float = 0.0, emotion: str = "",
                    speaker_id: str = "", channel_type: str = "",
-                   channel_id: str = "", speaker_name: str = "") -> bool:
+                   channel_id: str = "", speaker_name: str = "",
+                   direct: bool = None) -> bool:
         """
         写入一轮对话：
         1. 归档到 JSONL（权威）
         2. 提交索引任务（异步）
         评分暂只记录，不做过滤（阶段 A 策略）。
+        direct: 是否直接互动（私聊/@/回复/点名）；None 时私聊默认 True、群聊默认 False。
         """
         event = MemoryEvent.create(
             session_id, user_msg, ai_msg, score=score, emotion=emotion,
             speaker_id=speaker_id, channel_type=channel_type or "private",
             channel_id=channel_id, speaker_name=speaker_name,
         )
+        if direct is None:
+            direct = (event.channel_type == "private")
         if not self.archive.append(event):
             return False
+        # 关系等级：msg_count 记曝光，direct_count 记真正互动
+        if self.relationship is not None:
+            try:
+                self.relationship.observe(
+                    speaker_id=event.speaker_id,
+                    display_name=event.speaker_name,
+                    channel_type=event.channel_type,
+                    channel_id=event.channel_id,
+                    direct=bool(direct))
+            except Exception as e:
+                print(f"[Memory] 关系等级更新失败: {e}")
         # 同步索引，保证写入后立即可查；失败才入队异步重试
         try:
             r = self.indexer.index(event)
@@ -181,7 +215,8 @@ class MemoryService:
                                              "session_id": ev.session_id,
                                              "speaker_id": ev.speaker_id,
                                              "channel_type": ev.channel_type,
-                                             "channel_id": ev.channel_id},
+                                             "channel_id": ev.channel_id,
+                                             "user_msg": (ev.user_msg or "")[:200]},
                                 "similarity": 0.5, "source": "lexical"}
         except Exception as e:
             print(f"[Memory] 关键词检索失败: {e}")
@@ -296,16 +331,20 @@ class MemoryService:
 
     # ============ 群聊上下文 ============
 
-    def get_group_context(self, channel_id: str, limit: int = 15) -> list:
+    def get_group_context(self, channel_id: str, limit: int = 10,
+                          bot_name: str = "她") -> list:
         """
-        拉取某群最近 N 条消息，用于被触发时补充上下文。
-        返回 [{"speaker": 昵称或QQ号, "text": 内容, "time": 时间}, ...]（旧→新）
+        拉取某群最近 N 轮消息，用于被触发时补充上下文。
+        返回 [{"speaker": 昵称, "speaker_id": QQ, "text": 内容, "time": 时间, "is_bot": bool}, ...]
+        speaker 用昵称而非 QQ 号——模型需要知道"谁在说话"才能理解对话逻辑
+        bot_name: 机器人自己的显示名（由调用方按当前人格传入）
         """
         events = self.archive.list_recent_by_channel(channel_id, limit=limit)
         out = []
         for ev in events:
             out.append({
-                "speaker": ev.speaker_id,
+                "speaker": ev.speaker_name or ev.speaker_id,
+                "speaker_id": ev.speaker_id,
                 "text": ev.user_msg,
                 "time": ev.timestamp,
                 "is_bot": False,
@@ -313,7 +352,8 @@ class MemoryService:
             # 若该轮有 AI 回复（说明被触发过），也带上
             if ev.ai_msg:
                 out.append({
-                    "speaker": "Shelwell",
+                    "speaker": bot_name,
+                    "speaker_id": "bot",
                     "text": ev.ai_msg,
                     "time": ev.timestamp,
                     "is_bot": True,
@@ -346,6 +386,20 @@ class MemoryService:
                             stats["skipped"] += 1
                             continue
                         if self.archive.append(ev):
+                            if self.relationship is not None:
+                                try:
+                                    # 历史数据没有 direct 标记：私聊/有 AI 回复的群聊视为直接互动
+                                    direct = (ev.channel_type == "private"
+                                              or bool(ev.ai_msg))
+                                    self.relationship.observe(
+                                        speaker_id=ev.speaker_id,
+                                        display_name=ev.speaker_name,
+                                        channel_type=ev.channel_type,
+                                        channel_id=ev.channel_id,
+                                        direct=direct,
+                                        ts=ev.timestamp)
+                                except Exception as e:
+                                    print(f"[Memory] 导入时关系等级更新失败: {e}")
                             if enqueue_index:
                                 self.jobs.enqueue("index", {"event_id": ev.id},
                                                   dedup_key=ev.id)
@@ -358,6 +412,51 @@ class MemoryService:
             print(f"[Memory] 导入失败: {e}")
             stats["errors"] += 1
         return stats
+
+    # ============ 修改 ============
+
+    def update_event(self, event_id: str, user_msg: str = None,
+                     ai_msg: str = None) -> dict:
+        """
+        修改一条尚未提炼的情景记忆，并重建双索引。
+        已提炼（consolidated）的记录只能删除，不能修改——语义事实已经派生了，
+        改原文会让事实失去来源，因此这里直接拒绝。
+        """
+        ev = self.archive.get(event_id)
+        if not ev:
+            return {"ok": False, "message": "这条情景记忆不存在（可能已被删除）"}
+        if ev.consolidated:
+            return {"ok": False,
+                    "message": "这条情景记忆已经过语义提炼，只能删除，不能修改"}
+        if user_msg is None and ai_msg is None:
+            return {"ok": False, "message": "没有要修改的内容"}
+        if user_msg is not None:
+            ev.user_msg = str(user_msg)
+        if ai_msg is not None:
+            ev.ai_msg = str(ai_msg)
+        if not (ev.user_msg or "").strip() and not (ev.ai_msg or "").strip():
+            return {"ok": False, "message": "用户消息和 AI 回复不能同时为空"}
+
+        if not self.archive.update(ev):
+            return {"ok": False, "message": "写入归档失败，原内容未改动"}
+
+        indexed = False
+        r = {"vector": False, "lexical": False}
+        try:
+            # index() 内部对向量做 upsert、对 FTS 先删后插，足够覆盖旧内容
+            r = self.indexer.index(ev)
+            indexed = bool(r.get("vector") or r.get("lexical"))
+        except Exception as e:
+            print(f"[Memory] 修改后重建索引失败: {e}")
+
+        if r.get("vector") and r.get("lexical"):
+            msg = "已保存，向量索引与关键词索引已重建"
+        elif r.get("lexical"):
+            msg = "已保存，关键词索引已重建；向量索引失败（Ollama 恢复后可运行 rebuild_index）"
+        else:
+            msg = "已保存；索引更新失败（Ollama 恢复后可运行 rebuild_index 重建）"
+        return {"ok": True, "message": msg, "indexed": indexed,
+                "event": ev.to_dict()}
 
     # ============ 删除 ============
 

@@ -25,7 +25,7 @@ DEFAULTS = {
     "rapid_penalty": 0.40,          # 热聊惩罚
     "quiet_penalty": 0.60,          # 静默时段惩罚
     "cooldown_penalty": 0.50,       # 冷却惩罚
-    "name_aliases": ["Shelwell", "希儿", "小希", "Shel"],
+    "name_aliases": ["西尔维娅", "西儿", "小西", "维娅"],
 }
 
 

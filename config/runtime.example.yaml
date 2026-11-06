@@ -24,7 +24,10 @@ context:
   compress_threshold: 20
   compress_keep_recent: 8
 memory:
-  extractor_model: ''          # 语义提炼用模型；空=跟随 active.model。嵌入模型（bge-m3）不能提炼
+  extractor_model: ''          # 语义提炼用模型；空=跟随 active.model。
   auto_consolidate: false      # 每日自动提炼开关
   consolidate_time: '23:00'    # 自动提炼时间（本地时间 HH:MM）
   consolidate_limit: 50        # 单次最多处理多少条情景记忆
+relationship:
+  dependent_id: ''             # 唯一可达到“依赖”的对象（QQ 号）；空=无人
+  dependent_name: ''           # 仅用于控制台显示

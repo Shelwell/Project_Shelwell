@@ -1,5 +1,5 @@
 model:
-  base: qwen3.8:27b
+  base: darkidol-qwen3.8-27b:q4
   persona: shelwell-persona
   embedding: bge-m3
 ollama:
@@ -9,31 +9,93 @@ ollama:
 generation:
   temperature: 0.7
   num_predict: 1024
-  num_ctx: 8192
+  num_ctx: 32768
   think: false
-  keep_alive: "10m"         # 模型驻留时长：私聊每条消息刷新倒计时，10分钟无消息后卸载
+  keep_alive: "0.5h"          # 模型常驻：避免冷加载（27B 冷启约 50 秒）
 context:
-  max_length: 30
+  max_length: 120           # 短期上下文窗口（条）；配合 32k 上下文与前缀缓存
   memory_enabled: true
+  compact_at: 0.7           # 上次 prompt token 达到 num_ctx 的 70% 时压缩
+  keep_recent_turns: 10     # 压缩后保留最近 10 轮原文
+  summary_model: ""         # 空=跟随当前对话模型
+  summary_max_chars: 800    # 摘要上限
+  group_profiles_ttl_seconds: 3600  # 群友稳定档案快照 TTL
+  group_profiles_max_members: 8     # 最多注入多少人的档案
+weather:
+  enabled: true
+  timezone: Asia/Shanghai
+  state_path: memory/weather_state.json
+  snow_start: "12-07"
+  snow_end: "03-05"
+  update_hours: [5, 12, 20]
+  temp_min: -20
+  temp_max: 35
+  keep_same_chance: 0.42
+  summer_months: [6, 7, 8]
+  summer_min_temp: 10      # 夏季最低温硬下限，避免零下
+  summary_in_c1: true
 memory:
   top_k: 3
-  min_similarity: 0.35
+  min_similarity: 0.5
   collection_name: shelwell_memory
+knowledge:
+  enabled: true
+  collection_name: shelwell_knowledge
+  top_k: 2                      # 单轮最多注入几条世界档案
+  min_similarity: 0.55          # 低于此相似度宁可不注入，避免无关设定
+  path: config/persona_prompts/shelwell_knowledge.jsonl
+memewiki:
+  enabled: false                # 梗百科已停用；原代码保留，置 true 可恢复
+
+# 关系等级：x=直接互动（私聊/@/回复/点名/门禁接话），y=认识小时数
+# 群聊旁观只记“见过”，不进等级；24h+1 条直聊进「认识」
+relationship:
+  enabled: true
+  db_path: memory/index/relationships.sqlite3
+  thresholds:
+    stranger_max_msgs: 0        # 陌生：0 条直聊，或 y<24h
+    stranger_max_hours: 24
+    acquaint_max_msgs: 300      # 认识：>0 条直聊且 >24h；300 条且 120h 进了解
+    acquaint_max_hours: 120     # 5 天
+    known_max_msgs: 1000        # 了解：1000 条且 360h 进信任
+    known_max_hours: 360        # 15 天
+    depend_min_msgs: 3000       # 依赖：3000 条 + 1080h + 唯一指定对象
+    depend_min_hours: 1080      # 45 天；非指定对象最高到信任
 reply:
-  max_chars_per_bubble: 40   # 单个气泡字符上限；超长回复按标点再切分
-  max_bubbles: 3             # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
+  max_chars_per_bubble: 40      # 单个气泡字符上限；超长回复按标点再切分
+  max_bubbles: 2                # 单轮最多气泡数；超出部分并入最后一条（不丢内容）
+  single_bubble_max_chars: 45   # 整条回复不超过这个字数时，强制合并成一条（多数对话应是单条）
+  silent_hint: "（...她没有任何回应，到底是为什么呢？）"   # 模型选择不回应时代发的旁白
+vision:
+  enabled: false
+  model: ''                     # 空=跟随当前对话模型（直连 27B，不另起模型避免冷加载）
+  max_side: 1920                 # 只处理小图（QQ 表情包）；最长边超过就直接跳过，不缩放
+  max_bytes: 2097152            # 原始文件上限 2MB
+  max_images: 2                 # 单条消息最多处理几张图
+  max_per_minute: 10            # 视觉调用频率上限，防止群刷图拖垮对话
+  cache_path: memory/index/vision_cache.sqlite3   # 图片指纹 → 描述 缓存
+debug:
+  trace_enabled: true           # 记录每次对话的完整输入/输出/错误，供提示词调试
+  trace_dir: logs/llm_trace
+  trace_retention_days: 7       # 自动清理超过 N 天的 trace
+  trace_max_chars: 1000000      # 单次输入超过这个字符数时截断（防图片/超长上下文）
 ui:
   page_title: Shelwell
   page_icon: 💬
-  welcome_message: 你好呀！我是 Shelwell，很高兴认识你。今天想聊点什么呢？
+  welcome_message: 你好呀！我是西尔维娅，很高兴认识你。今天想聊点什么呢？
 qq_bot:
   group_enabled: true
+  primary_group_id: "590529685"   # 群聊常驻上下文：私聊也会带该群档案/C1
+  group_context_limit: 20        # 群共享历史已承载上下文；动态块只做补充
+  group_context_max_chars: 3000  # 超过这个字符数从最旧的消息开始丢
+  group_bootstrap_limit: 200     # 首次进群时从归档读取多少条做 C1 摘要
+  group_summary_keep: 30         # 群历史压缩后保留最近多少条
+  group_summary_trigger_tokens: 5000  # 群历史估算 token 达到此值时触发总结
   trigger_keywords:
-  - Shelwell
-  - Shel
-  - she
-  - 小希
-  - 薇
+  - 西尔维娅
+  - 西儿
+  - 小西
+  - 维娅
   auto_engage:
     enabled: true
     heat_threshold: 7.0
@@ -48,15 +110,27 @@ qq_bot:
     conversation_window_minutes: 3
     half_life_minutes: 60
     heat_reply_to_me: 0.3
-  # 影子模式：只记录"新策略会不会接话"，不发送、不影响现有行为
-  shadow:
-    enabled: true
-    log_path: logs/group_shadow.jsonl
-    threshold: 0.55              # 参与意愿分达到多少才考虑接话
-    active_hours: ["19:00-24:00"]  # 群活跃时段（该时段内门槛自然更高，避免打断热聊）
+  # 群聊接话门禁：active=用新策略决策；shadow=只记录不执行
+  # 影子数据已验证过，当前为正式决策
+  group_gate:
+    mode: active                  # active / shadow
+    log_path: logs/group_gate.jsonl
+    threshold: 0.55               # 参与意愿分达到多少才考虑接话
+    active_hours: ["19:00-24:00"]  # 群活跃时段
     quiet_hours: ["00:30-09:00"]   # 静默时段：除非 @ 我，否则不说话
     cooldown_seconds: 90
     rapid_window_seconds: 30
     rapid_min_msgs: 3
     min_len: 4
-    name_aliases: ["Shelwell", "希儿", "小希", "Shel"]
+    name_aliases: ["西尔维娅", "西儿", "小西", "维娅"]
+  # 最小版状态机：shadow=只记录状态转移，不改变发送；试验后再切 active
+  group_state:
+    enabled: true
+    mode: shadow
+    log_path: logs/group_state.jsonl
+    watch_seconds: 8
+    strong_window_seconds: 1.2
+    weak_window_seconds: 4
+    max_wait_seconds: 10
+    cooldown_seconds: 45
+    min_interval_seconds: 20

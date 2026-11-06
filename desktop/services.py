@@ -2,7 +2,9 @@
 # 职责：桌面控制台的业务逻辑层（无 UI 依赖）
 # 所有函数为同步阻塞，调用方需放入线程池执行
 
+import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -684,10 +686,13 @@ def list_episodic_memories(page: int = 1, page_size: int = 20,
                 "timestamp": e.timestamp,
                 "session_id": e.session_id,
                 "speaker_id": e.speaker_id,
+                "speaker_name": e.speaker_name,
                 "channel_type": e.channel_type,
                 "channel_id": e.channel_id,
                 "user_msg": e.user_msg,
                 "ai_msg": e.ai_msg,
+                "consolidated": bool(e.consolidated),
+                "index_status": e.index_status,
             } for e in page_items],
             "total": total,
             "page": page,
@@ -799,6 +804,24 @@ def delete_episodic_memory(event_id: str) -> dict:
     return {"ok": ok_any, "message": "；".join(msgs)}
 
 
+def update_episodic_memory(event_id: str, user_msg: str, ai_msg: str) -> dict:
+    """修改一条未提炼的情景记忆，并重建索引；已提炼的会被后端拒绝"""
+    if not event_id:
+        return {"ok": False, "message": "缺少记忆 ID"}
+    try:
+        from backend.memory.service import MemoryService
+        svc = MemoryService(auto_worker=False)
+        try:
+            return svc.update_event(event_id, user_msg=user_msg, ai_msg=ai_msg)
+        finally:
+            try:
+                svc.stop_worker()
+            except Exception:
+                pass
+    except Exception as e:
+        return {"ok": False, "message": "修改失败: %s" % e}
+
+
 def clear_semantic_memory() -> int:
     """只清语义记忆"""
     try:
@@ -859,6 +882,62 @@ def list_episodic_sessions() -> list:
         return sorted(sessions)
     except Exception:
         return []
+
+
+# ---------- 关系等级 ----------
+
+def list_relationships() -> dict:
+    """列出所有发言人的关系等级（首次调用会从归档回填）"""
+    try:
+        from backend.relationship import RelationshipStore
+        from backend.memory.archive import Archive
+        store = RelationshipStore()
+        store.ensure_backfill(Archive())
+        items = [rel.to_dict() for rel in store.all()]
+        return {
+            "ok": True,
+            "items": items,
+            "dependent_id": store.dependent_id(),
+            "stats": store.stats(),
+            "thresholds": dict(store.thresholds),
+        }
+    except Exception as e:
+        return {"ok": False, "items": [], "error": str(e)}
+
+
+def set_relationship_dependent(speaker_id: str, name: str = "") -> dict:
+    """设置唯一可达“依赖”的对象；传空字符串表示取消"""
+    try:
+        sid = str(speaker_id or "").strip()
+        get_runtime().update({"relationship": {
+            "dependent_id": sid,
+            "dependent_name": str(name or "").strip(),
+        }})
+        if sid:
+            return {"ok": True, "message": "已将 %s 设为依赖对象" % (name or sid)}
+        return {"ok": True, "message": "已取消依赖对象"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+def clear_relationship(speaker_id: str) -> dict:
+    """清除某人的关系记录（下次说话从陌生重新累计）"""
+    try:
+        from backend.relationship import RelationshipStore
+        ok = RelationshipStore().delete(speaker_id)
+        return {"ok": ok, "message": "已清除" if ok else "记录不存在"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+def clear_relationships() -> dict:
+    """清空全部关系记录"""
+    try:
+        from backend.relationship import RelationshipStore
+        n = RelationshipStore().clear_all()
+        return {"ok": True, "message": "已清除 %d 条关系记录" % n}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
 
 
 def clear_all_memory() -> str:
@@ -953,6 +1032,14 @@ def clear_all_memory() -> str:
     except Exception as e:
         log("任务表清理失败: %s" % e)
 
+    # 6. 关系等级：由聊天记录派生，一并清空（依赖对象设置保留）
+    try:
+        from backend.relationship import RelationshipStore
+        n = RelationshipStore().clear_all()
+        log("关系: 清除 %d 位发言人的等级记录" % n)
+    except Exception as e:
+        log("关系清理失败: %s" % e)
+
     log("")
     log("清空完成")
     return "\n".join(logs)
@@ -964,3 +1051,174 @@ def restart_service(name: str) -> str:
 
 def restart_napcat() -> str:
     return run_ps("docker restart napcat", 90)
+
+
+# ---------- 模型调试 trace ----------
+
+def _trace_dir() -> Path:
+    raw = str(get("debug.trace_dir", "logs/llm_trace") or "logs/llm_trace")
+    p = Path(raw)
+    return p if p.is_absolute() else (ROOT / p)
+
+
+def list_llm_traces(limit: int = 100, kind: str = "", session: str = "") -> dict:
+    """读取 trace index，返回最近的模型调用（新→旧）"""
+    try:
+        d = _trace_dir()
+        idx = d / "index.jsonl"
+        if not idx.exists():
+            return {"ok": True, "items": [], "trace_dir": str(d)}
+        lines = []
+        with open(idx, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if kind and rec.get("kind") != kind:
+                    continue
+                if session and session not in str(rec.get("session_id", "")):
+                    continue
+                lines.append(rec)
+        items = lines[-int(limit):]
+        items.reverse()
+        return {"ok": True, "items": items, "trace_dir": str(d)}
+    except Exception as e:
+        return {"ok": False, "items": [], "error": str(e)}
+
+
+def read_llm_trace(trace_id: str) -> dict:
+    """按 trace_id 读取完整 JSON"""
+    try:
+        d = _trace_dir()
+        idx = d / "index.jsonl"
+        target = None
+        if idx.exists():
+            with open(idx, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if rec.get("trace_id") == trace_id:
+                        target = rec
+                        break
+        if not target:
+            return {"ok": False, "error": "trace 不存在或 index 已清理"}
+        path = d / str(target.get("file", ""))
+        if not path.exists():
+            return {"ok": False, "error": "trace 文件已被清理"}
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"ok": True, "data": data}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def open_trace_dir() -> str:
+    d = _trace_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return open_in_explorer(str(d))
+
+
+def clear_llm_traces() -> str:
+    """清空 trace 文件与 index（保留目录）"""
+    try:
+        d = _trace_dir()
+        if not d.exists():
+            return "trace 目录不存在"
+        n = 0
+        for p in list(d.iterdir()):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                n += 1
+            elif p.name == "index.jsonl":
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+        return "已清理 %d 个日期目录" % n
+    except Exception as e:
+        return "清理失败: %s" % e
+
+# ---------------- 知识库 ----------------
+
+def _knowledge_base():
+    from backend.knowledge_base import build_from_config
+    return build_from_config(str(ROOT))
+
+
+def get_knowledge_stats() -> dict:
+    """Chroma 条数 + JSONL 条数/分类。"""
+    try:
+        kb = _knowledge_base()
+        st = kb.stats()
+        listing = kb.list_items(page_size=1)
+        return {
+            "ok": True,
+            "collection": st.get("collection", ""),
+            "indexed": int(st.get("count", 0) or 0),
+            "jsonl": int(listing.get("total", 0) or 0),
+            "categories": listing.get("categories", []),
+            "path": listing.get("jsonl", ""),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def list_knowledge(keyword: str = "", category: str = "",
+                   page: int = 1, page_size: int = 20) -> dict:
+    try:
+        return _knowledge_base().list_items(
+            keyword=keyword, category=category, page=page, page_size=page_size)
+    except Exception as e:
+        return {"items": [], "total": 0, "page": 1, "pages": 1,
+                "categories": [], "error": str(e)}
+
+
+def get_knowledge_item(item_id: str) -> dict:
+    try:
+        return _knowledge_base().get_item(item_id)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def next_knowledge_id() -> str:
+    try:
+        return _knowledge_base().next_id()
+    except Exception:
+        return "K001"
+
+
+def save_knowledge(item: dict) -> dict:
+    try:
+        return _knowledge_base().upsert_item(item)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def delete_knowledge(item_id: str) -> dict:
+    try:
+        return _knowledge_base().delete_item(item_id)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def import_knowledge_jsonl(path: str) -> dict:
+    try:
+        return _knowledge_base().import_jsonl(path)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def rebuild_knowledge_index() -> dict:
+    try:
+        return _knowledge_base().rebuild_index()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

@@ -39,8 +39,8 @@ _SENTENCE_PARTS = re.compile(
     r"怎么样|怎么|多少|为什么|能不能|是不是|什么|了吗|了没|一下|你说|要不要|有没有"
 )
 
-# 唤醒词：Shelwell 的称呼，先剥掉再判断
-_WAKE_WORDS = ["Shelwell", "shelwell", "希儿", "小希", "薇", "Shel", "she"]
+# 唤醒词：西尔维娅的称呼，先剥掉再判断
+_WAKE_WORDS = ["西尔维娅", "西儿", "小西", "维娅"]
 
 
 def _clean_text(text: str) -> str:

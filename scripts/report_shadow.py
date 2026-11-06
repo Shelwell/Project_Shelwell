@@ -33,14 +33,19 @@ def load(path: Path, date: str = ""):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file", default=str(ROOT / "logs" / "group_shadow.jsonl"))
+    ap.add_argument("--file", default=str(ROOT / "logs" / "group_gate.jsonl"))
     ap.add_argument("--date", default="")
     a = ap.parse_args()
 
-    rows = load(Path(a.file), a.date)
+    path = Path(a.file)
+    if not path.exists():
+        legacy = ROOT / "logs" / "group_shadow.jsonl"
+        if legacy.exists():
+            path = legacy
+    rows = load(path, a.date)
     if not rows:
-        print(f"没有影子记录：{a.file}" + (f"（日期 {a.date}）" if a.date else ""))
-        print("提示：QQ 服务运行且 qq_bot.shadow.enabled=true 时，群消息会自动记录。")
+        print(f"没有门禁记录：{path}" + (f"（日期 {a.date}）" if a.date else ""))
+        print("提示：QQ 服务运行且配置了 qq_bot.group_gate 时，群消息会自动记录。")
         return
 
     total = len(rows)

@@ -1,5 +1,6 @@
 # scripts/generate_file_tree.py
-# 用途：生成 Shelwell 项目的文件树，保存为根目录下的 文件树.md
+# 用途：生成自动文件树，保存为根目录下的 文件树.auto.md
+#       带功能备注的人工索引是 文件树.md，本脚本不覆盖它
 # 运行：python scripts/generate_file_tree.py
 
 import os
@@ -60,7 +61,7 @@ IGNORE_FILES = {
 IGNORE_HIDDEN_DIRS = True
 
 # 输出文件名
-OUTPUT_FILENAME = "文件树.md"
+OUTPUT_FILENAME = "文件树.auto.md"
 
 
 def should_ignore_dir(dir_name: str) -> bool:
