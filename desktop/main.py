@@ -14,6 +14,11 @@ from PySide6.QtWidgets import (
     QGridLayout, QGroupBox, QTextEdit, QComboBox, QFrame, QMessageBox,
 )
 
+# 允许直接运行 `python desktop/main.py`
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from desktop.services import ROOT
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -26,6 +31,7 @@ from desktop.pages.api_page import ApiPage
 from desktop.pages.qq_page import QQPage
 from desktop.pages.plugin_page import PluginPage
 from desktop.pages.memory_page import MemoryPage
+from desktop.pages.knowledge_page import KnowledgePage
 from desktop.pages.relationship_page import RelationshipPage
 from desktop.pages.trace_page import TracePage
 
@@ -319,7 +325,7 @@ class HomePage(QWidget):
 
 # ---------------- 主窗口 ----------------
 
-PAGES = ["首页", "人格管理", "记忆管理", "关系", "模型切换", "调试",
+PAGES = ["首页", "人格管理", "知识库", "记忆管理", "关系", "模型切换", "调试",
          "插件管理", "QQ 账号", "API 接入"]
 
 
@@ -350,6 +356,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.home_page = HomePage()
         self.persona_page = PersonaPage()
+        self.knowledge_page = KnowledgePage()
         self.memory_page = MemoryPage()
         self.relationship_page = RelationshipPage()
         self.model_page = ModelPage()
@@ -357,9 +364,9 @@ class MainWindow(QMainWindow):
         self.plugin_page = PluginPage()
         self.qq_page = QQPage()
         self.api_page = ApiPage()
-        for w in (self.home_page, self.persona_page, self.memory_page,
-                  self.relationship_page, self.model_page, self.trace_page,
-                  self.plugin_page, self.qq_page, self.api_page):
+        for w in (self.home_page, self.persona_page, self.knowledge_page,
+                  self.memory_page, self.relationship_page, self.model_page,
+                  self.trace_page, self.plugin_page, self.qq_page, self.api_page):
             self.stack.addWidget(w)
         layout.addWidget(self.stack, 1)
 
@@ -371,6 +378,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(idx)
         if PAGES[idx] == "首页":
             self.home_page.refresh()
+        elif PAGES[idx] == "知识库":
+            self.knowledge_page.refresh()
         elif PAGES[idx] == "关系":
             self.relationship_page.reload()
         elif PAGES[idx] == "调试":

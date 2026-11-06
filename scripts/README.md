@@ -51,6 +51,7 @@ cd E:\Shelwell
 | `test_auto_consolidate.py` | 自动提炼时间、标记、失败降级 |
 | `test_extractor_identity.py` | 事实归属不串人 |
 | `test_knowledge.py` | 世界知识检索 |
+| `test_knowledge_crud.py` | 知识 JSONL/Chroma 添加、更新、删除、导入、重建 |
 
 ### 关系/群聊
 
@@ -80,7 +81,7 @@ $tests = @(
   "test_identity", "test_context_freeze", "test_silent", "test_reply_short",
   "test_memory_retrieval", "test_memory_edit", "test_memory_delete",
   "test_auto_consolidate", "test_extractor_identity", "test_knowledge",
-  "test_relationship", "test_gate_runner", "test_group_shadow",
+  "test_knowledge_crud", "test_relationship", "test_gate_runner", "test_group_shadow",
   "test_group_state", "test_vision", "test_weather"
 )
 foreach ($t in $tests) {

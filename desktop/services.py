@@ -1146,3 +1146,79 @@ def clear_llm_traces() -> str:
         return "已清理 %d 个日期目录" % n
     except Exception as e:
         return "清理失败: %s" % e
+
+# ---------------- 知识库 ----------------
+
+def _knowledge_base():
+    from backend.knowledge_base import build_from_config
+    return build_from_config(str(ROOT))
+
+
+def get_knowledge_stats() -> dict:
+    """Chroma 条数 + JSONL 条数/分类。"""
+    try:
+        kb = _knowledge_base()
+        st = kb.stats()
+        listing = kb.list_items(page_size=1)
+        return {
+            "ok": True,
+            "collection": st.get("collection", ""),
+            "indexed": int(st.get("count", 0) or 0),
+            "jsonl": int(listing.get("total", 0) or 0),
+            "categories": listing.get("categories", []),
+            "path": listing.get("jsonl", ""),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def list_knowledge(keyword: str = "", category: str = "",
+                   page: int = 1, page_size: int = 20) -> dict:
+    try:
+        return _knowledge_base().list_items(
+            keyword=keyword, category=category, page=page, page_size=page_size)
+    except Exception as e:
+        return {"items": [], "total": 0, "page": 1, "pages": 1,
+                "categories": [], "error": str(e)}
+
+
+def get_knowledge_item(item_id: str) -> dict:
+    try:
+        return _knowledge_base().get_item(item_id)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def next_knowledge_id() -> str:
+    try:
+        return _knowledge_base().next_id()
+    except Exception:
+        return "K001"
+
+
+def save_knowledge(item: dict) -> dict:
+    try:
+        return _knowledge_base().upsert_item(item)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def delete_knowledge(item_id: str) -> dict:
+    try:
+        return _knowledge_base().delete_item(item_id)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def import_knowledge_jsonl(path: str) -> dict:
+    try:
+        return _knowledge_base().import_jsonl(path)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def rebuild_knowledge_index() -> dict:
+    try:
+        return _knowledge_base().rebuild_index()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

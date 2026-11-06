@@ -30,7 +30,7 @@ backend/memewiki/              梗百科
 | `relationship.py` | 5 级关系判定、SQLite、回填、关系段渲染 | `RelationshipStore.observe/get/all/stats`、`render_relationship_block` |
 | `group_policy.py` | 群聊门禁规则评分 | `GroupGate.decide(...)` / `GroupMessage` |
 | `group_state.py` | 最小群聊状态机（shadow） | `GroupStateMachine.observe(...)` / `finalize(...)` |
-| `knowledge_base.py` | 世界设定 RAG | `search(...)` / `add/ingest` / `stats` |
+| `knowledge_base.py` | 世界设定 RAG + JSONL/Chroma 增删改查 | `search(...)` / `list_items(...)` / `upsert_item(...)` / `delete_item(...)` / `rebuild_index(...)` |
 | `vision.py` | 图片识别、缓存、限频 | `VisionPipeline.describe(...)` |
 | `weather.py` | 持久化天气/温度/9 档时间 | `WeatherService.current()` / `summary()` / `environment()` |
 | `reply_format.py` | 清洗、短回复合并、气泡拆分 | `split_bubbles(...)` / `strip_silent_marker` |

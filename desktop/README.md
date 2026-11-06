@@ -34,6 +34,7 @@ dist\ShelwellConsole\ShelwellConsole.exe
 |---|---|
 | 首页 | 启动/停止 Ollama、QQBot、NapCat；服务/端口/日志状态 |
 | 人格管理 | persona 切换、facts 切换、LoRA、新建/删除人格 |
+| 知识库 | 世界设定 JSONL/Chroma 查看、搜索、添加、编辑、删除、导入、重建 |
 | 记忆管理 | 情景/语义查看、搜索、编辑、删除、清空、提炼 |
 | 关系 | 5 级关系、直接互动/群内见过、设置唯一依赖对象、清除记录 |
 | 模型切换 | Ollama 对话模型列表、生成参数 |

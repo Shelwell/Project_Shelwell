@@ -7,6 +7,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -27,7 +28,7 @@ class KnowledgeBase:
 
     def __init__(self, chroma_dir: Optional[str] = None,
                  collection_name: str = "shelwell_knowledge",
-                 embedder=None):
+                 embedder=None, jsonl_path: Optional[str] = None):
         base = Path(__file__).resolve().parent.parent
         chroma_dir = chroma_dir or str(base / "memory" / "vector_store" / "chroma_db")
         os.makedirs(chroma_dir, exist_ok=True)
@@ -37,6 +38,9 @@ class KnowledgeBase:
         self.collection = self.client.get_or_create_collection(
             name=collection_name, metadata={"hnsw:space": "cosine"})
         self.embedder = embedder or Embedder()
+        jp = Path(jsonl_path) if jsonl_path else (
+            base / "config" / "persona_prompts" / "shelwell_knowledge.jsonl")
+        self.jsonl_path = jp if jp.is_absolute() else base / jp
 
     # ---------- 内部 ----------
 
@@ -126,6 +130,186 @@ class KnowledgeBase:
                     items.append(json.loads(line))
         return self.ingest(items, rebuild=rebuild)
 
+    # ---------- JSONL CRUD ----------
+
+    @staticmethod
+    def _norm_list(value) -> list:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+        text = str(value).replace("，", ",")
+        out = []
+        for line in text.splitlines():
+            out.extend(x.strip() for x in line.split(",") if x.strip())
+        return out
+
+    @staticmethod
+    def _build_embed_text(item: dict) -> str:
+        parts = [
+            str(item.get("title", "") or "").strip(),
+            " ".join(KnowledgeBase._norm_list(item.get("aliases"))),
+            " ".join(KnowledgeBase._norm_list(item.get("questions"))),
+            str(item.get("content", "") or "").strip(),
+        ]
+        return " ".join(p for p in parts if p)
+
+    def _read_jsonl(self) -> list:
+        path = self.jsonl_path
+        if not path.exists():
+            return []
+        items = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    items.append(obj)
+        return items
+
+    def _write_jsonl(self, items: list) -> None:
+        path = self.jsonl_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline=chr(10)) as f:
+            for item in items:
+                f.write(json.dumps(item, ensure_ascii=False) + chr(10))
+        tmp.replace(path)
+
+    def _normalize_item(self, item: dict) -> dict:
+        if not isinstance(item, dict):
+            raise ValueError("知识条目必须是对象")
+        out = dict(item)
+        out["id"] = str(out.get("id", "") or "").strip()
+        out["title"] = str(out.get("title", "") or "").strip()
+        out["category"] = str(out.get("category", "") or "").strip() or "other"
+        out["content"] = str(out.get("content", "") or "").strip()
+        out["aliases"] = self._norm_list(out.get("aliases"))
+        out["questions"] = self._norm_list(out.get("questions"))
+        out["related"] = self._norm_list(out.get("related"))
+        out["canon"] = str(out.get("canon", "") or "").strip() or "原文"
+        out["source"] = str(out.get("source", "") or "").strip() or "desktop_ui"
+        if not out["id"] or not out["title"] or not out["content"]:
+            raise ValueError("id、title、content 不能为空")
+        out["embed_text"] = self._build_embed_text(out)
+        return out
+
+    def next_id(self) -> str:
+        nums = []
+        for item in self._read_jsonl():
+            sid = str(item.get("id", ""))
+            if sid[:1].upper() == "K" and sid[1:].isdigit():
+                nums.append(int(sid[1:]))
+        return "K%03d" % (max(nums, default=0) + 1)
+
+    def list_items(self, keyword: str = "", category: str = "",
+                   page: int = 1, page_size: int = 20) -> dict:
+        all_items = self._read_jsonl()
+        items = list(all_items)
+        kw = (keyword or "").strip().lower()
+        cat = (category or "").strip()
+        if cat:
+            items = [x for x in items if str(x.get("category", "")) == cat]
+        if kw:
+            def hit(x):
+                blob = " ".join([
+                    str(x.get("id", "")), str(x.get("title", "")),
+                    str(x.get("category", "")), str(x.get("content", "")),
+                    " ".join(x.get("aliases") or []),
+                    " ".join(x.get("questions") or []),
+                ]).lower()
+                return kw in blob
+            items = [x for x in items if hit(x)]
+        items.sort(key=lambda x: str(x.get("id", "")))
+        total = len(items)
+        page = max(1, int(page or 1))
+        page_size = max(1, min(200, int(page_size or 20)))
+        pages = max(1, (total + page_size - 1) // page_size)
+        if page > pages:
+            page = pages
+        start = (page - 1) * page_size
+        cats = sorted({str(x.get("category", "")) for x in all_items
+                       if str(x.get("category", "")).strip()})
+        return {"items": items[start:start + page_size], "total": total,
+                "page": page, "page_size": page_size, "pages": pages,
+                "categories": cats, "jsonl": str(self.jsonl_path)}
+
+    def get_item(self, item_id: str) -> dict:
+        item_id = str(item_id or "").strip()
+        for item in self._read_jsonl():
+            if str(item.get("id", "")) == item_id:
+                return item
+        return {}
+
+    def upsert_item(self, item: dict) -> dict:
+        out = self._normalize_item(item)
+        items = self._read_jsonl()
+        replaced = False
+        for i, old in enumerate(items):
+            if str(old.get("id", "")) == out["id"]:
+                items[i] = out
+                replaced = True
+                break
+        if not replaced:
+            items.append(out)
+        self._write_jsonl(items)
+        r = self.ingest([out])
+        if not r.get("ok"):
+            raise RuntimeError("向量入库失败，JSONL 已写入，可重建索引")
+        return {"item": out, "created": not replaced,
+                "ingest": r, "jsonl": str(self.jsonl_path)}
+
+    def delete_item(self, item_id: str) -> dict:
+        item_id = str(item_id or "").strip()
+        items = self._read_jsonl()
+        new_items = [x for x in items if str(x.get("id", "")) != item_id]
+        if len(new_items) == len(items):
+            return {"ok": False, "error": "知识不存在"}
+        self._write_jsonl(new_items)
+        try:
+            self._ensure_collection()
+            self.collection.delete(ids=[item_id])
+        except Exception as e:
+            return {"ok": False, "error": "JSONL 已删除，Chroma 删除失败: %s" % e}
+        return {"ok": True, "id": item_id, "jsonl": str(self.jsonl_path)}
+
+    def import_jsonl(self, path: str, merge: bool = True) -> dict:
+        src = Path(path)
+        if not src.exists():
+            return {"ok": False, "error": "文件不存在"}
+        incoming = []
+        with open(src, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    incoming.append(json.loads(line))
+                except Exception:
+                    continue
+        existing = {} if not merge else {
+            str(x.get("id", "")): x for x in self._read_jsonl()}
+        for it in incoming:
+            try:
+                out = self._normalize_item(it)
+            except Exception:
+                continue
+            existing[out["id"]] = out
+        items = sorted(existing.values(), key=lambda x: str(x.get("id", "")))
+        self._write_jsonl(items)
+        r = self.ingest(items, rebuild=False)
+        return {"ok": True, "imported": len(incoming), "total": len(items),
+                "ingest": r, "jsonl": str(self.jsonl_path)}
+
+    def rebuild_index(self) -> dict:
+        items = self._read_jsonl()
+        return self.ingest(items, rebuild=True)
+
     # ---------- 检索 ----------
 
     def search(self, query: str, top_k: int = 2,
@@ -181,7 +365,12 @@ def build_from_config(project_root: str = None) -> KnowledgeBase:
     from backend.config_loader import get
     cfg = get("knowledge", {}) or {}
     base = Path(project_root) if project_root else Path(__file__).resolve().parent.parent
+    jp = cfg.get("path") or "config/persona_prompts/shelwell_knowledge.jsonl"
+    p = Path(jp)
+    if not p.is_absolute():
+        p = base / p
     return KnowledgeBase(
         chroma_dir=str(base / "memory" / "vector_store" / "chroma_db"),
         collection_name=cfg.get("collection_name", "shelwell_knowledge"),
+        jsonl_path=str(p),
     )
