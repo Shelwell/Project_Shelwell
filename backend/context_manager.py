@@ -6,6 +6,7 @@ from backend.memory_retriever import MemoryRetriever
 from backend.config_loader import get
 from backend.persona_engine import PersonaEngine
 from backend.weather import WeatherService
+from backend.people import PeopleRegistry
 
 
 class ContextManager:
@@ -86,6 +87,7 @@ class ContextManager:
         self._knowledge = None
         self._knowledge_tried = False
 
+        self.people = PeopleRegistry()
         self.weather = None
         try:
             if get("weather.enabled", False):
@@ -245,7 +247,9 @@ class ContextManager:
                     speakers = {}
                     for item in group_msgs:
                         who = (self.persona_engine.display_name
-                               if item.get("is_bot") else item.get("speaker", "?"))
+                               if item.get("is_bot") else
+                               self.people.label(item.get("speaker_id", ""),
+                                                 fallback=item.get("speaker", "?")))
                         if not item.get("is_bot"):
                             speakers[who] = speakers.get(who, 0) + 1
                         lines.append(f"{who}：{item.get('text', '')}")
@@ -338,6 +342,13 @@ class ContextManager:
                 recent[idx] = msg
             print(f"[Context] 动态参考下沉到 user 尾部: {len(combined_dynamic)} 字")
 
+        # 人物昵称/旧昵称统一替换为 [YY]，整个 prompt 不保留已知昵称。
+        try:
+            recent = self.people.scrub_messages(recent)
+            combined_system = self.people.scrub(combined_system)
+        except Exception as e:
+            print(f"[Context] 人物标识清洗失败（不影响对话）: {e}")
+
         # --- 人格用独立 system 消息承载（稳定前缀）---
         if system_as_role:
             recent.insert(0, {"role": "system", "content": combined_system})
@@ -404,7 +415,7 @@ class ContextManager:
         text = str(getattr(f, "fact", "") or "").strip()
         subject = str(getattr(f, "subject", "") or "").strip()
         # 旧昵称主语替换成“对方”，避免和角色英文名冲突
-        if subject and text.startswith(subject):
+        if subject and not subject.startswith("[") and text.startswith(subject):
             text = "对方" + text[len(subject):]
         return text
 
@@ -459,7 +470,7 @@ class ContextManager:
                 sid = str(item.get("speaker_id") or "").strip()
                 name = str(item.get("speaker") or sid).strip()
                 if sid and sid != "bot":
-                    members[sid] = name or sid
+                    members[sid] = self.people.label(sid, fallback=name)
             if not members:
                 return ""
             limit = int(get("context.group_profiles_max_members", 8) or 8)
@@ -486,7 +497,8 @@ class ContextManager:
                     if len(facts) >= 2:
                         break
                 if facts:
-                    lines.append(f"- {members[sid]}：" + "；".join(facts))
+                    lines.append(f"- {members[sid]}：" + "；".join(
+                        self.people.scrub(x) for x in facts))
             if not lines:
                 return ""
             text = ("【群友稳定档案｜系统记忆，不是你的经历，不要复述】\n"

@@ -96,6 +96,19 @@ class MemoryService:
 
     # ============ 对外接口（兼容旧 MemoryRetriever） ============
 
+    @staticmethod
+    def _event_label(ev) -> str:
+        label = getattr(ev, "speaker_label", "") or ""
+        if label:
+            return label
+        try:
+            from backend.people import PeopleRegistry
+            return PeopleRegistry().label(
+                getattr(ev, "speaker_id", ""),
+                fallback=getattr(ev, "speaker_name", ""))
+        except Exception:
+            return getattr(ev, "speaker_name", "") or getattr(ev, "speaker_id", "")
+
     def add_memory(self, user_msg: str, ai_msg: str, session_id: str = "default",
                    score: float = 0.0, emotion: str = "",
                    speaker_id: str = "", channel_type: str = "",
@@ -108,10 +121,17 @@ class MemoryService:
         评分暂只记录，不做过滤（阶段 A 策略）。
         direct: 是否直接互动（私聊/@/回复/点名）；None 时私聊默认 True、群聊默认 False。
         """
+        try:
+            from backend.people import PeopleRegistry
+            speaker_label = PeopleRegistry().label(
+                speaker_id, fallback=speaker_name)
+        except Exception:
+            speaker_label = ""
         event = MemoryEvent.create(
             session_id, user_msg, ai_msg, score=score, emotion=emotion,
             speaker_id=speaker_id, channel_type=channel_type or "private",
             channel_id=channel_id, speaker_name=speaker_name,
+            speaker_label=speaker_label,
         )
         if direct is None:
             direct = (event.channel_type == "private")
@@ -343,7 +363,7 @@ class MemoryService:
         out = []
         for ev in events:
             out.append({
-                "speaker": ev.speaker_name or ev.speaker_id,
+                "speaker": self._event_label(ev),
                 "speaker_id": ev.speaker_id,
                 "text": ev.user_msg,
                 "time": ev.timestamp,

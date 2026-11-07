@@ -7,6 +7,7 @@
 | 文件 | 性质 | 谁改 | 是否入库 |
 |---|---|---|---|
 | `app_config.yaml` | 部署期默认配置 | 开发者/人工 | 是 |
+| `people.yaml` | 人物标识表：QQ → `[YY]` 固定称呼 | 人工 | 是 |
 | `runtime.example.yaml` | 运行期模板 | 开发者 | 是 |
 | `runtime.yaml` | 本机运行期配置（含密钥） | 控制台/人工 | **否，gitignore** |
 
@@ -53,6 +54,21 @@ runtime.yaml 的显式值
 | `context.summary_max_chars` | 800 | 摘要上限 |
 | `context.group_profiles_ttl_seconds` | 3600 | 群友稳定档案快照 TTL |
 | `context.group_profiles_max_members` | 8 | 最多注入多少人的档案 |
+| `people.path` | config/people.yaml | 人物标识表：QQ → 固定称呼 [YY] |
+| `diary.path` | memory/diaries.jsonl | 第一人称日记存储 |
+| `diary.recent_limit` | 3 | C1 取最近多少篇日记 |
+
+### 人物标识表
+
+`config/people.yaml`：
+
+- `self`：西尔维娅自己的模型标识（如 `[西尔维娅]`），只用于语义事实，不把“我”放进 aliases
+- `qq`：QQ 号
+- `label`：模型使用的固定称呼，prompt 中显示为 `[label]`
+- `aliases`：旧昵称/群昵称/私聊昵称，只用于清洗，不进入 prompt
+- `id`：内部人物 ID
+
+`label` 必须唯一，且不能包含方括号、空格、换行。
 
 ### 天气
 

@@ -117,6 +117,9 @@ MemoryService.import_jsonl(path, session_override=None, ...) -> dict
 - `delete_session`：按 session 批量删
 - `clear_all`：清空情景/语义/索引，关系记录由调用方决定是否清
 - `import_jsonl`：导入历史归档，按 `channel_type`/`ai_msg` 推断是否直接互动
+- 新归档同时写 `speaker_label`（`[YY]`）；`speaker_name` 只保留原始昵称
+- 语义提炼的 subject/object/fact 统一使用 `[YY]`；西尔维娅自己写成 `[西尔维娅]`，不用“我”
+- 旧数据可运行 `scripts/migrate_people_labels.py --apply`
 
 ## 4. 数据路径
 

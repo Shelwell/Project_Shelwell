@@ -21,6 +21,7 @@ cd E:\Shelwell
 | `ingest_knowledge.py` | 知识库写入 Chroma | `python scripts/ingest_knowledge.py` |
 | `rebuild_index.py` | 重建情景向量/FTS 索引 | `python scripts/rebuild_index.py` |
 | `manage_memory.py` | 命令行查看/清理记忆 | `python scripts/manage_memory.py --help` |
+| `migrate_people_labels.py` | 把已有语义/情景昵称迁移成 `[YY]`（默认 dry-run） | `python scripts/migrate_people_labels.py --apply` |
 | `report_shadow.py` | 分析门禁 shadow 日志 | `python scripts/report_shadow.py` |
 | `set_ollama_env.ps1` | 给 NSSM 的 Ollama 服务写环境变量（q8 KV、FlashAttention、12 线程） | `powershell -File scripts/set_ollama_env.ps1` |
 | `start_all.ps1` | 一键启动服务/容器（无控制台时） | `powershell -File scripts/start_all.ps1` |
@@ -52,6 +53,7 @@ cd E:\Shelwell
 | `test_extractor_identity.py` | 事实归属不串人 |
 | `test_knowledge.py` | 世界知识检索 |
 | `test_knowledge_crud.py` | 知识 JSONL/Chroma 添加、更新、删除、导入、重建 |
+| `test_people_diary.py` | 人物标识清洗、日记 scope/存储 |
 
 ### 关系/群聊
 
@@ -81,8 +83,9 @@ $tests = @(
   "test_identity", "test_context_freeze", "test_silent", "test_reply_short",
   "test_memory_retrieval", "test_memory_edit", "test_memory_delete",
   "test_auto_consolidate", "test_extractor_identity", "test_knowledge",
-  "test_knowledge_crud", "test_relationship", "test_gate_runner", "test_group_shadow",
-  "test_group_state", "test_vision", "test_weather"
+  "test_knowledge_crud", "test_people_diary", "test_relationship",
+  "test_gate_runner", "test_group_shadow", "test_group_state", "test_vision",
+  "test_weather"
 )
 foreach ($t in $tests) {
   .venv\Scripts\python.exe "scripts\$t.py"

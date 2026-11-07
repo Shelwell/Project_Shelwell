@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections import OrderedDict
@@ -22,7 +23,10 @@ if str(_PROJECT_ROOT) not in sys.path:
 from backend.orchestrator import Orchestrator
 from backend.group_state import GroupStateMachine
 from backend.vision import VisionPipeline
-from backend.session_summary import summarize_history, configured_model
+from backend.session_summary import (
+    summarize_history, configured_model, make_diary, summarize_diaries)
+from backend.people import PeopleRegistry
+from backend.diary import DiaryStore
 from engagement import EngagementTracker
 from gate import GateRunner
 from backend.config_loader import get
@@ -48,6 +52,8 @@ class QQBot:
         self._group_tokens = {}            # group_id -> 估算 token
         self._group_bootstrapped = set()   # 已从历史归档生成 C1 的群
         self._group_summary_tasks = {}     # group_id -> asyncio.Task
+        self.people = PeopleRegistry()
+        self.diaries = DiaryStore()
         self.orchestrator = Orchestrator()
         self._last_silent = False   # 上一轮是否由模型选择沉默（旁白不算她说话）
         self.group_enabled = get("qq_bot.group_enabled", True)
@@ -250,7 +256,7 @@ class QQBot:
             except Exception as e:
                 log.warning("群 C1 初始化调度失败: %s", e)
             if not engage:
-                self._group_append(group_id, speaker_label, text)
+                self._group_append(group_id, user_id, speaker_label, text)
                 self._maybe_summarize_group(group_id)
                 # 不接：后台归档（图片识别较慢，不能阻塞后续消息处理）
                 self._spawn_archive(evt, text, image_segs,
@@ -287,6 +293,7 @@ class QQBot:
                         quoted = {
                             "sender": (sender.get("card") or sender.get("nickname")
                                        or str(msg_data.get("user_id", ""))),
+                            "sender_id": str(msg_data.get("user_id", "") or ""),
                             "text": self._plain_text(msg_data.get("message")),
                             "time": msg_data.get("time"),
                         }
@@ -337,6 +344,7 @@ class QQBot:
         sender = evt.get("sender") or {}
         self.message_cache[mid] = {
             "sender": sender.get("card") or sender.get("nickname") or str(evt.get("user_id", "")),
+            "sender_id": str(evt.get("user_id", "") or ""),
             "text": self._plain_text(evt.get("message")),
             "time": evt.get("time"),
         }
@@ -611,9 +619,11 @@ class QQBot:
     def _group_token_count(self, group_id: str) -> int:
         return int(self._group_tokens.get(str(group_id), 0) or 0)
 
-    def _group_append(self, group_id: str, speaker: str, text: str):
+    def _group_append(self, group_id: str, speaker_id: str,
+                      speaker_name: str, text: str):
+        label = self.people.label(speaker_id, fallback=speaker_name)
         hist = self.group_sessions.setdefault(f"group:{group_id}", [])
-        hist.append({"role": "user", "content": f"{speaker or '?'}：{text}"})
+        hist.append({"role": "user", "content": f"{label}：{text}"})
         self._group_tokens[str(group_id)] = (
             self._group_token_count(group_id) + self._estimate_tokens(text))
         if len(hist) > MAX_SESSION_MESSAGES:
@@ -644,23 +654,36 @@ class QQBot:
                 if item.get("is_bot"):
                     msgs.append({"role": "assistant", "content": txt})
                 else:
+                    label = self.people.label(item.get("speaker_id") or "")
                     msgs.append({"role": "user",
-                                 "content": f"{item.get('speaker') or '?'}：{txt}"})
+                                 "content": f"{label}：{txt}"})
             if len(msgs) < 10:
                 self._group_bootstrapped.discard(gid)
                 return
+            key = self._group_state_key(gid)
             loop = asyncio.get_event_loop()
+            diary = await loop.run_in_executor(
+                None,
+                lambda: make_diary(
+                    msgs, people=self.people, is_group=True,
+                    model=configured_model()))
+            if not diary:
+                return
+            self.diaries.append(
+                key, diary, participants=self._diary_participants(diary))
+            rows = self.diaries.recent(
+                key, limit=int(get("diary.recent_limit", 3) or 3))
             summary = await loop.run_in_executor(
                 None,
-                lambda: summarize_history(
-                    msgs, previous_summary="",
+                lambda: summarize_diaries(
+                    rows, previous_summary="",
                     max_chars=int(get("context.summary_max_chars", 800) or 800),
-                    model=configured_model()))
+                    model=configured_model(), people=self.people))
+            summary = summary or diary
             if summary:
-                key = self._group_state_key(gid)
                 self._session_summary[key] = summary
                 self._session_prompt_tokens[key] = 0
-                log.info("群历史 C1 初始化: %s -> %d 字", gid, len(summary))
+                log.info("群历史 C1 初始化(日记): %s -> %d 字", gid, len(summary))
         except Exception as e:
             self._group_bootstrapped.discard(gid)
             log.warning("群历史 C1 初始化失败: %s", e)
@@ -677,12 +700,24 @@ class QQBot:
         if not old:
             return
         loop = asyncio.get_event_loop()
+        diary = await loop.run_in_executor(
+            None,
+            lambda: make_diary(
+                old, people=self.people, is_group=True,
+                model=configured_model()))
+        if not diary:
+            return
+        self.diaries.append(
+            key, diary, participants=self._diary_participants(diary))
+        rows = self.diaries.recent(
+            key, limit=int(get("diary.recent_limit", 3) or 3))
         summary = await loop.run_in_executor(
             None,
-            lambda: summarize_history(
-                old, previous_summary=self._session_summary.get(key, ""),
+            lambda: summarize_diaries(
+                rows, previous_summary=self._session_summary.get(key, ""),
                 max_chars=int(get("context.summary_max_chars", 800) or 800),
-                model=configured_model()))
+                model=configured_model(), people=self.people))
+        summary = summary or diary
         if not summary:
             return
         hist[:] = recent
@@ -690,7 +725,7 @@ class QQBot:
         self._session_prompt_tokens[key] = 0
         self._group_tokens[gid] = sum(
             self._estimate_tokens(m.get("content", "")) for m in hist)
-        log.info("群历史压缩: %d 条 -> %d 字 | %s", len(old), len(summary), gid)
+        log.info("群历史压缩(日记): %d 条 -> %d 字 | %s", len(old), len(summary), gid)
 
     def _maybe_summarize_group(self, group_id: str):
         gid = str(group_id)
@@ -706,8 +741,19 @@ class QQBot:
         except Exception as e:
             log.warning("群历史压缩任务创建失败: %s", e)
 
-    def _maybe_compact(self, session_id, history, speaker_name=""):
-        """token 探针触发时才压缩；摘要用质量模型，失败则保持原历史"""
+    @staticmethod
+    def _diary_participants(text: str) -> list:
+        out = []
+        for m in re.findall(r"\[[^\]]+\]", text or ""):
+            if m in ("[SILENT]", "[当前对方]"):
+                continue
+            if m not in out:
+                out.append(m)
+        return out
+
+    def _maybe_compact(self, session_id, history, speaker_name="",
+                       speaker_id="", is_group=False):
+        """token 探针触发时才压缩：先写日记，再由日记生成长期摘要。"""
         existing = self._session_summary.get(session_id, "")
         try:
             rt = get_runtime()
@@ -720,15 +766,32 @@ class QQBot:
                 return existing
             old = list(history[:-keep])
             recent = list(history[-keep:])
-            summary = summarize_history(
-                old, previous_summary=existing,
-                max_chars=int(get("context.summary_max_chars", 800) or 800),
-                model=configured_model())
+            max_chars = int(get("context.summary_max_chars", 800) or 800)
+            label = self.people.label(speaker_id) if speaker_id else ""
+            diary = make_diary(
+                old, people=self.people, speaker_label=label,
+                is_group=is_group, model=configured_model())
+            if diary:
+                self.diaries.append(
+                    session_id, diary,
+                    participants=self._diary_participants(diary))
+                rows = self.diaries.recent(
+                    session_id, limit=int(get("diary.recent_limit", 3) or 3))
+                summary = summarize_diaries(
+                    rows, previous_summary=existing, max_chars=max_chars,
+                    model=configured_model(), people=self.people)
+                if not summary:
+                    summary = diary
+            else:
+                # 日记失败时退回旧摘要，至少不丢历史
+                summary = summarize_history(
+                    old, previous_summary=existing, max_chars=max_chars,
+                    model=configured_model())
             if summary:
                 history[:] = recent
                 self._session_summary[session_id] = summary
                 self._session_prompt_tokens[session_id] = 0
-                log.info("会话压缩: %d 条旧消息 -> %d 字摘要 | %s",
+                log.info("会话压缩(日记): %d 条旧消息 -> %d 字摘要 | %s",
                          len(old), len(summary), session_id)
                 return summary
         except Exception as e:
@@ -764,18 +827,22 @@ class QQBot:
                             or str(speaker_id or ""))
         if is_group:
             # 群共享历史里必须带昵称，否则模型分不清谁说的
-            history[-1]["content"] = f"{speaker_name or speaker_id}：{text}"
+            history[-1]["content"] = (
+                self.people.label(speaker_id, fallback=speaker_name) + "：" + text)
             self._group_tokens[str(channel_id)] = (
                 self._group_token_count(str(channel_id)) + self._estimate_tokens(text))
             self._maybe_summarize_group(str(channel_id))
-            speaker_hint = f"当前发言者：{speaker_name or speaker_id}"
+            speaker_hint = "当前发言者：" + self.people.label(
+                speaker_id, fallback=speaker_name)
             if at_me:
                 speaker_hint += "（这条在 @ 你，必须给出回应，不要沉默）"
 
         # 引用说明
         quote_hint = ""
         if quoted:
-            quote_hint = f"对方引用了这条消息：{quoted['sender']} 说「{quoted['text'][:100]}」"
+            qlabel = self.people.label(
+                quoted.get("sender_id", ""), fallback=quoted.get("sender", ""))
+            quote_hint = f"引用了 {qlabel} 的消息：「{quoted['text'][:100]}」"
 
         # 模型常驻由配置 generation.keep_alive 控制（不要冷加载），这里不再按热度卸载
         keep_alive = None
@@ -783,7 +850,9 @@ class QQBot:
         loop = asyncio.get_event_loop()
 
         def _run():
-            summary = self._maybe_compact(state_key, history, speaker_name)
+            summary = self._maybe_compact(
+                state_key, history, speaker_name,
+                speaker_id=speaker_id, is_group=is_group)
             msgs = list(history)
             if images:
                 msgs[-1] = dict(msgs[-1])

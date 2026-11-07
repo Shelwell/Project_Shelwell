@@ -430,7 +430,8 @@ class MemoryPage(QWidget):
         for i, m in enumerate(items):
             ts = (m.get("timestamp") or "")[:19].replace("T", " ")
             sess = m.get("session_id", "")
-            spk = m.get("speaker_id", "")
+            spk = (m.get("speaker_label") or m.get("speaker_name")
+                   or m.get("speaker_id", ""))
             um = (m.get("user_msg") or "").replace("\n", " ")
             am = (m.get("ai_msg") or "").replace("\n", " ")
             consolidated = bool(m.get("consolidated"))

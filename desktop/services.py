@@ -644,6 +644,16 @@ def get_memory_stats() -> dict:
     }
 
 
+def _speaker_label_for(ev) -> str:
+    try:
+        from backend.people import PeopleRegistry
+        return PeopleRegistry().label(
+            getattr(ev, "speaker_id", ""),
+            fallback=getattr(ev, "speaker_name", ""))
+    except Exception:
+        return getattr(ev, "speaker_name", "") or getattr(ev, "speaker_id", "")
+
+
 def list_episodic_memories(page: int = 1, page_size: int = 20,
                            session_id: str = "", keyword: str = "",
                            date_from: str = "", date_to: str = "") -> dict:
@@ -687,6 +697,8 @@ def list_episodic_memories(page: int = 1, page_size: int = 20,
                 "session_id": e.session_id,
                 "speaker_id": e.speaker_id,
                 "speaker_name": e.speaker_name,
+                "speaker_label": (getattr(e, "speaker_label", "") or
+                                  _speaker_label_for(e)),
                 "channel_type": e.channel_type,
                 "channel_id": e.channel_id,
                 "user_msg": e.user_msg,

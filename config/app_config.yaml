@@ -21,6 +21,11 @@ context:
   summary_max_chars: 800    # 摘要上限
   group_profiles_ttl_seconds: 3600  # 群友稳定档案快照 TTL
   group_profiles_max_members: 8     # 最多注入多少人的档案
+people:
+  path: config/people.yaml
+diary:
+  path: memory/diaries.jsonl
+  recent_limit: 3
 weather:
   enabled: true
   timezone: Asia/Shanghai
