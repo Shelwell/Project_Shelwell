@@ -729,7 +729,7 @@ class QQBot:
 
     def _maybe_summarize_group(self, group_id: str):
         gid = str(group_id)
-        limit = int(get("context.group_summary_trigger_tokens", 5000) or 5000)
+        limit = int(get("qq_bot.group_summary_trigger_tokens", 5000) or 5000)
         if self._group_token_count(gid) < limit:
             return
         task = self._group_summary_tasks.get(gid)
@@ -853,6 +853,13 @@ class QQBot:
             summary = self._maybe_compact(
                 state_key, history, speaker_name,
                 speaker_id=speaker_id, is_group=is_group)
+            diary_text = self.diaries.format_recent(
+                state_key,
+                limit=int(get("diary.recent_limit", 3) or 3),
+                max_chars=1200,
+            )
+            if diary_text:
+                summary = (summary + "\n【最近日记】" + diary_text).strip()
             msgs = list(history)
             if images:
                 msgs[-1] = dict(msgs[-1])

@@ -107,16 +107,16 @@ class ContextManager:
         构建发送给模型的消息列表
         兼容 Mistral 等 [INST] 格式模型：不单独发 system 消息，
         而是把系统指令合并到第一条 user 消息的开头
+
+        拼接顺序：群聊  A 静态人格 + B 群友档案 + C1 日记摘要 + C2 日记 + D1 群内早期对话记录 + D2 群内最近对话记录 + E 语义情景记忆，世界知识，关系、个人档案 + F时间天气温度和回访说话内容
+                 私聊                                                + D1 私聊早期对话记录 + D2 私聊最近对话记录  
         """
         self._refresh_persona()
 
         if not messages:
             messages = []
 
-        # --- 第一级：最近 N 条短期上下文 ---
-        recent = messages[-self.max_context_length:].copy() if messages else []
-
-        # --- 收集所有 system 内容 ---
+        # --- A 静态人格 ---
         system_parts = [self.system_instruction]
         # 动态内容（记忆/群上下文/梗/场景）统一放这里，最后拼到本轮 user 消息，
         # 保证 system + 历史前缀稳定，命中 Ollama 前缀缓存（否则每轮全量重算）
@@ -135,11 +135,14 @@ class ContextManager:
             except Exception as e:
                 print(f"[Context] 天气读取失败，降级为无天气: {e}")
 
-        # 当前说话人档案：必须放在 C2 之后，不能进 system
+        # E2 当前说话人档案 不进system
         profile_text = self._profile_block(speaker_id)
 
-        # --- 关系等级：代码判定，放动态段最前面（本轮说话人是谁、什么等级）---
+        # E1 关系等级：代码判定，放动态段最前面（本轮说话人是谁、什么等级）---
         rel_text = self._relationship_block(speaker_id, speaker_name, channel_type)
+
+        # --- D2：最近 N 条短期上下文 ---
+        # recent = messages[-self.max_context_length:].copy() if messages else []
 
         # 顺序：当前说话人档案 → D 关系/环境
         if profile_text:
@@ -156,7 +159,7 @@ class ContextManager:
                 stable_parts.append(group_profiles)
 
 
-        # C1：会话摘要（早期对话压缩）
+        # C：早期的日记摘要 + 最近日记
         summary_text = str(session_summary or "").strip()
         resident_summary = str(resident_group_summary or "").strip()
         if resident_summary:
@@ -165,10 +168,10 @@ class ContextManager:
             summary_text = weather_summary + (("\n" + summary_text) if summary_text else "")
         if summary_text:
             stable_parts.append(
-                "【会话摘要｜日记/长期摘要，不是对方原话，不要复述】\n"
+                "【早期日记摘要 + 昨天的日记】\n"
                 + summary_text)
 
-        # --- 第二级：长期记忆检索（语义优先，不足回退情景）---
+        # --- E2 + E3：长期记忆检索 语义+记忆 ---
         if self.memory_enabled and self.memory is not None and current_query:
             semantic_hits = []
             # 2.1 先查语义事实
@@ -224,16 +227,14 @@ class ContextManager:
                     try:
                         memory_text = self._format_memories(memories)
                         dynamic_parts.append(
-                            "【你和用户之前的对话片段】\n"
-                            "以下是相关的历史对话原文。参考这些内容，"
-                            "不要说自己不记得、记性不好。\n"
+                            "【你和用户之前的对话片段，可参考回答】\n"                       
                             f"{memory_text}"
                         )
                         print(f"[Context] 回退注入 {len(memories)} 条情景记忆")
                     except Exception as e:
                         print(f"[Context] 情景格式化失败: {e}")
 
-        # --- 群聊补充：拉取该群最近消息作为上下文（带发言人身份）---
+        # --- D2 群聊补充：拉取该群最近消息作为上下文（带发言人身份）---
         if channel_type == "group" and channel_id and self.memory_enabled and self.memory is not None:
             try:
                 group_limit = int(get("qq_bot.group_context_limit", 20) or 20)
@@ -263,29 +264,22 @@ class ContextManager:
                         lines.pop(0)
 
                     roster = "、".join(sorted(speakers))
-                    block = (
-                        "【群里刚才在聊】\n"
-                        "下面是本群最近的真实对话，冒号前是发言人。\n"
-                        + (f"这段时间说话的人：{roster}\n" if roster else "")
-                        + "注意：不同人说的话要分清归属，不要把 A 的事当成 B 的；"
-                        "你只对当前的发言对象说话。\n"
-                        + "\n".join(lines)
-                    )
-                    dynamic_parts.append(block)
+                    block = ("【群里刚才在聊】 " + " 注意不同人说的话要分清归属，不要把 A 的事当成 B 的；" + "你只对当前的发言对象说话。\n" + "\n".join(lines))
+                    stable_parts.append(block)
                     print(f"[Context] 注入群上下文 {len(group_msgs)} 条 | 发言人: {roster}")
             except Exception as e:
                 print(f"[Context] 群上下文获取失败: {e}")
 
-        # --- 群聊场景提示：谁在说话 + 引用的是哪条 ---
-        scene_hints = []
-        if speaker_hint:
-            scene_hints.append(speaker_hint)
-        if quote_hint:
-            scene_hints.append(quote_hint)
-        if scene_hints:
-            dynamic_parts.append("【当前场景】\n" + "\n".join(scene_hints))
+        # # --- 群聊场景提示：谁在说话 + 引用的是哪条 ---
+        # scene_hints = []
+        # if speaker_hint:
+        #     scene_hints.append(speaker_hint)
+        # if quote_hint:
+        #     scene_hints.append(quote_hint)
+        # if scene_hints:
+        #     dynamic_parts.append("【当前场景】\n" + "\n".join(scene_hints))
 
-        # --- 长期 RAG 知识库：客观世界设定（与对话记忆严格分离）---
+        # ---E5  长期 RAG 知识库：客观世界设定（与对话记忆严格分离）---
         # 记忆库 = "你与我"（私密/动态/关系）；知识库 = "世界"（公有/静态/事实）
         if current_query:
             try:
@@ -340,7 +334,7 @@ class ContextManager:
                 msg["content"] = (
                     "【背景资料｜系统提供，不是对方的话；不要复述、不要模仿格式】\n"
                     + combined_dynamic
-                    + "\n\n【背景资料结束】\n\n【对方刚刚说】\n"
+                    + "\n【背景资料结束】\n【对方刚刚说】\n"
                     + (msg.get("content") or "")
                 ).strip()
                 recent[idx] = msg

@@ -91,7 +91,7 @@ ui:
 qq_bot:
   group_enabled: true
   primary_group_id: "590529685"   # 群聊常驻上下文：私聊也会带该群档案/C1
-  group_context_limit: 20        # 群共享历史已承载上下文；动态块只做补充
+  group_context_limit: 80        # 群共享历史已承载上下文；动态块只做补充
   group_context_max_chars: 3000  # 超过这个字符数从最旧的消息开始丢
   group_bootstrap_limit: 200     # 首次进群时从归档读取多少条做 C1 摘要
   group_summary_keep: 30         # 群历史压缩后保留最近多少条
