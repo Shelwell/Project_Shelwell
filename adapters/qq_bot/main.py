@@ -913,9 +913,10 @@ class QQBot:
         return reply
 
     async def send_reply(self, evt, reply, reply_to=None, at_user=None):
-        lines = [l for l in reply.split("\n") if l.strip()]
+        # 只影响 QQ 显示，不修改 reply/history/归档
+        display_reply = self.people.strip_display_marks(reply)
+        lines = [l for l in display_reply.split("\n") if l.strip()]
         for i, line in enumerate(lines):
-            # 只在第一条消息上带引用和 @
             rt = reply_to if i == 0 else None
             au = at_user if i == 0 else None
             await self.send_msg(evt, line, reply_to=rt, at_user=au)

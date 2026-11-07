@@ -135,15 +135,17 @@ class ContextManager:
             except Exception as e:
                 print(f"[Context] 天气读取失败，降级为无天气: {e}")
 
+        # 当前说话人档案：必须放在 C2 之后，不能进 system
+        profile_text = self._profile_block(speaker_id)
+
         # --- 关系等级：代码判定，放动态段最前面（本轮说话人是谁、什么等级）---
         rel_text = self._relationship_block(speaker_id, speaker_name, channel_type)
+
+        # 顺序：当前说话人档案 → D 关系/环境
+        if profile_text:
+            dynamic_parts.append(profile_text)
         if rel_text:
             dynamic_parts.append(rel_text)
-
-        # 当前说话人的稳定档案：不依赖当前 query 命中，短消息也能带着基本记忆
-        profile_text = self._profile_block(speaker_id)
-        if profile_text:
-            stable_parts.append(profile_text)
 
         # B：本群所有群友的稳定档案快照（短 TTL，避免每轮变化）
         profile_group = (channel_id if channel_type == "group"
@@ -153,15 +155,17 @@ class ContextManager:
             if group_profiles:
                 stable_parts.append(group_profiles)
 
+
+        # C1：会话摘要（早期对话压缩）
         summary_text = str(session_summary or "").strip()
         resident_summary = str(resident_group_summary or "").strip()
         if resident_summary:
             summary_text = resident_summary + (("\n" + summary_text) if summary_text else "")
-        if weather_summary:
+        if get("weather.summary_in_c1", False) and weather_summary:
             summary_text = weather_summary + (("\n" + summary_text) if summary_text else "")
         if summary_text:
             stable_parts.append(
-                "【会话摘要｜早期对话压缩/天气摘要，不是对方原话，不要复述】\n"
+                "【会话摘要｜日记/长期摘要，不是对方原话，不要复述】\n"
                 + summary_text)
 
         # --- 第二级：长期记忆检索（语义优先，不足回退情景）---

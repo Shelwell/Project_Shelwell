@@ -90,6 +90,29 @@ class PeopleRegistry:
             return "[%s]" % item["label"]
         return ""
 
+    def strip_display_marks(self, text: str) -> str:
+        """
+        只给 QQ 显示用：去掉已知人物标识的方括号。
+        不修改原文，不影响记忆/历史。
+        [佩奇]觉得[安洁莉娜]的猫很可爱 -> 佩奇觉得安洁莉娜的猫很可爱
+        """
+        if not text:
+            return text
+
+        known = set(self.by_name.keys())
+        if self.self_label:
+            known.add(self.self_label)
+
+        def repl(m):
+            inner = m.group(1)
+            # 已知人物 + 未知人物占位符
+            if inner in known or inner.startswith("未知"):
+                return inner
+            # [笑] / [图片] / [CQ:...] 等不是人物，保留
+            return m.group(0)
+
+        return re.sub(r"\[([^\[\]]+)\]", repl, text)
+
     def self_ref(self) -> str:
         return "[%s]" % self.self_label if self.self_label else ""
 

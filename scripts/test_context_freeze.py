@@ -4,6 +4,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -21,6 +22,22 @@ def check(name, cond, detail=""):
 
 
 class StubMemory:
+    def list_semantic_facts(self, page=1, page_size=20,
+                            owner_id="", state="", keyword=""):
+        return {"items": [
+            SimpleNamespace(
+                fact=f"[{owner_id}]喜欢猫",
+                subject=f"[{owner_id}]",
+                tag="preference",
+                base_weight=0,
+                hits=0,
+                last_hit="",
+                last_activated_at="",
+                created_at="",
+                archived=False,
+            )
+        ]}
+
     """最小内存桩：返回固定语义事实，用来验证动态内容的位置"""
     def __init__(self, fact_text):
         self.fact_text = fact_text
@@ -53,7 +70,8 @@ last1 = out1[-1]["content"]
 check("第一条是 system", out1[0]["role"] == "system", out1[0]["role"])
 check("system 以静态人格开头", system1.startswith(cm.system_instruction),
       f"{len(system1)} vs {len(cm.system_instruction)}")
-check("C1 天气摘要进入 system", "【天气】" in system1)
+check("天气不在 system", "【天气】" not in system1)
+check("天气在 user 尾部", "【天气】" in last1 or "今天" in last1)
 check("语义记忆不在 system 里", "冰美式" not in system1)
 check("动态内容在本轮 user 里", "冰美式" in last1, last1[:80])
 check("user 原文仍在", "在吗" in last1)
@@ -81,6 +99,28 @@ out4 = cm.prepare_context([{"role": "user", "content": "看看这个", "images":
                           current_query="看看这个", session_id="qq:1",
                           system_as_role=True)
 check("images 字段保留", out4[-1].get("images") == ["AAA"], out4[-1].keys())
+
+out_a = cm.prepare_context(
+    [{"role": "user", "content": "在吗"}],
+    current_query="在吗",
+    speaker_id="1001",
+    system_as_role=True,
+)
+
+out_b = cm.prepare_context(
+    [{"role": "user", "content": "在吗"}],
+    current_query="在吗",
+    speaker_id="1002",
+    system_as_role=True,
+)
+
+check("换人 system 不变", out_a[0]["content"] == out_b[0]["content"])
+check("当前档案不在 system",
+      "当前说话人的稳定档案" not in out_a[0]["content"])
+check("当前档案在最后 user",
+      "当前说话人的稳定档案" in out_a[-1]["content"])
+check("不同人的档案不同",
+      "1001" in out_a[-1]["content"] and "1002" in out_b[-1]["content"])
 
 print("\n" + ("全部通过" if not FAIL else f"失败项: {FAIL}"))
 sys.exit(1 if FAIL else 0)

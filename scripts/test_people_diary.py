@@ -24,6 +24,9 @@ def check(name, cond, detail=""):
 tmp = Path(tempfile.mkdtemp(prefix="shelwell_people_"))
 people_yaml = tmp / "people.yaml"
 people_yaml.write_text(
+    "self:\n"
+    "  label: '西尔维娅'\n"
+    "  aliases: ['西尔维娅', '希尔薇']\n"
     "people:\n"
     "  - id: P001\n"
     "    qq: '2672768829'\n"
@@ -72,6 +75,25 @@ diary.append("private:1", "私聊日记", ["[佩奇]"], "2026-11-08")
 check("recent scope", len(diary.recent("group:1", 2)) == 2)
 check("scope isolated", len(diary.recent("private:1", 2)) == 1)
 check("format", "[安洁莉娜]" in diary.format_recent("group:1", 1), diary.format_recent("group:1", 1))
+
+check(
+    "QQ 显示去掉人物括号",
+    p.strip_display_marks("[佩奇]觉得[安洁莉娜]的猫很可爱")
+    == "佩奇觉得安洁莉娜的猫很可爱",
+    p.strip_display_marks("[佩奇]觉得[安洁莉娜]的猫很可爱"),
+)
+
+check(
+    "非人物括号保留",
+    p.strip_display_marks("[笑] [图片]") == "[笑] [图片]",
+    p.strip_display_marks("[笑] [图片]"),
+)
+
+check(
+    "self 括号去掉",
+    p.strip_display_marks("[西尔维娅]在吗") == "西尔维娅在吗",
+    p.strip_display_marks("[西尔维娅]在吗"),
+)
 
 shutil.rmtree(tmp, ignore_errors=True)
 print("\n" + ("全部通过" if not FAIL else f"失败项: {FAIL}"))
