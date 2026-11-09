@@ -6,6 +6,7 @@ from backend.memory.archive import Archive
 from backend.memory.extractor import Extractor, EXTRACTOR_VERSION
 from backend.memory.models import SemanticFact, now_iso
 from backend.memory.semantic import SemanticStore
+from backend.people import PeopleRegistry
 
 
 class Consolidator:
@@ -16,6 +17,7 @@ class Consolidator:
         self.archive = archive or Archive()
         self.store = store or SemanticStore()
         self.extractor = extractor or Extractor()
+        self.people = PeopleRegistry()
 
     def consolidate(self, session_filter: str = None, limit: int = 50,
                     dry_run: bool = False) -> dict:
@@ -44,7 +46,9 @@ class Consolidator:
         failed = 0
         for owner_id, evs in groups.items():
             # 主语用发言人昵称；没有昵称（旧数据）时退回 QQ 号，绝不写成“用户”
-            display = next((e.speaker_name for e in evs if e.speaker_name), "") or str(owner_id)
+            raw_display = (next((e.speaker_name for e in evs if e.speaker_name), "")
+                           or str(owner_id))
+            display = self.people.label(owner_id, fallback=raw_display)
             # 提取失败时抛异常，此时不标记已提炼，下轮可重试
             try:
                 facts = self.extractor.extract(evs, speaker_name=display,
@@ -55,6 +59,7 @@ class Consolidator:
                 continue
 
             for f in facts:
+                f = self._normalize_fact(f, display)
                 action = self._upsert_fact(f, owner_id, dry_run=dry_run)
                 all_facts.append(action)
                 if action["action"] == "new":
@@ -75,6 +80,26 @@ class Consolidator:
             "failed": failed,
             "facts": all_facts,
         }
+
+    def _normalize_fact(self, f: dict, display: str) -> dict:
+        """主体/宾语/正文统一为 [YY]；未知人物退化为固定显示。"""
+        f = dict(f)
+        raw_sub = str(f.get("subject", "") or "").strip()
+        sub = self.people.scrub(raw_sub)
+        sub = self.people.scrub_self(sub)
+        if not sub:
+            sub = display
+        elif not sub.startswith("["):
+            sub = self.people.label_for_name(sub) or ("[" + sub + "]")
+        f["subject"] = sub
+        obj = self.people.scrub(str(f.get("object", "") or "").strip())
+        f["object"] = self.people.scrub_self(obj)
+        fact_text = self.people.scrub(str(f.get("fact", "") or "").strip())
+        fact_text = self.people.scrub_self(fact_text)
+        if raw_sub and not raw_sub.startswith("[") and fact_text.startswith(raw_sub):
+            fact_text = sub + fact_text[len(raw_sub):]
+        f["fact"] = fact_text
+        return f
 
     def _upsert_fact(self, f: dict, owner_id: str, dry_run: bool = False) -> dict:
         """单条事实去重比对后新增或合并"""

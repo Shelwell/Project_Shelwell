@@ -62,7 +62,7 @@ svc.add_memory("我也喜欢", "算我一个", session_id="qqg:900:2",
                speaker_name="小红")
 msgs = svc.get_group_context("900", limit=10)
 speakers = [m["speaker"] for m in msgs]
-check("发言人用昵称而不是 QQ 号", "小明" in speakers and "1001" not in speakers, speakers)
+check("发言人用固定标识而不是 QQ 号", "[小明]" in speakers and "1001" not in speakers, speakers)
 check("包含机器人回复", any(m["is_bot"] for m in msgs), msgs)
 
 # ---------- 3. 旧配置兼容 ----------

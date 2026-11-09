@@ -19,8 +19,13 @@ context:
   keep_recent_turns: 10     # 压缩后保留最近 10 轮原文
   summary_model: ""         # 空=跟随当前对话模型
   summary_max_chars: 800    # 摘要上限
-  group_profiles_ttl_seconds: 3600  # 群友稳定档案快照 TTL
+  group_profiles_ttl_seconds: 10800  # 群友稳定档案快照 TTL
   group_profiles_max_members: 8     # 最多注入多少人的档案
+people:
+  path: config/people.yaml
+diary:
+  path: memory/diaries.jsonl
+  recent_limit: 3
 weather:
   enabled: true
   timezone: Asia/Shanghai
@@ -33,7 +38,7 @@ weather:
   keep_same_chance: 0.42
   summer_months: [6, 7, 8]
   summer_min_temp: 10      # 夏季最低温硬下限，避免零下
-  summary_in_c1: true
+  summary_in_c1: false
 memory:
   top_k: 3
   min_similarity: 0.5
@@ -86,7 +91,7 @@ ui:
 qq_bot:
   group_enabled: true
   primary_group_id: "590529685"   # 群聊常驻上下文：私聊也会带该群档案/C1
-  group_context_limit: 20        # 群共享历史已承载上下文；动态块只做补充
+  group_context_limit: 80        # 群共享历史已承载上下文；动态块只做补充
   group_context_max_chars: 3000  # 超过这个字符数从最旧的消息开始丢
   group_bootstrap_limit: 200     # 首次进群时从归档读取多少条做 C1 摘要
   group_summary_keep: 30         # 群历史压缩后保留最近多少条

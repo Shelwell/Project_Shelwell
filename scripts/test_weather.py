@@ -130,7 +130,7 @@ def main():
         [{"role": "user", "content": "测试"}],
         current_query="测试", speaker_id="u1", channel_type="private")
     text = out[-1]["content"]
-    check("C1 weather summary", "【天气】" in text)
+    check("C1 不放天气（缓存稳定）", "【天气】" not in out[0]["content"])
     check("D environment", "【当前环境】" in text and "°C" in text)
 
     STATE.unlink(missing_ok=True)

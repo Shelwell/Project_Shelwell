@@ -24,7 +24,9 @@ backend/memewiki/              梗百科
 |---|---|---|
 | `config_loader.py` | 读取 `config/app_config.yaml`，进程内缓存 | `get(path, default)` / `reload()` |
 | `runtime_config.py` | 读取/写入 `config/runtime.yaml`，按 mtime 热更新 | `get_runtime()` / `save_runtime()` |
-| `context_manager.py` | 构建 system + 历史 + 动态记忆/关系/知识 | `prepare_context(...)` / `archive_turn(...)` |
+| `context_manager.py` | 构建 system + 历史 + 动态记忆/关系/知识；统一清洗 [YY] | `prepare_context(...)` / `archive_turn(...)` |
+| `people.py` | QQ/别名 → 固定模型标识 [YY] | `PeopleRegistry.label()` / `scrub()` |
+| `diary.py` | 第一人称日记存储 | `DiaryStore.append()` / `recent()` |
 | `memory_retriever.py` | 记忆兼容层，委托 memory/service | `search(...)` / `search_semantic(...)` / `add_memory(...)` |
 | `persona_engine.py` | 人格 yaml → 系统提示词 | `PersonaEngine().prompt` / `full_name` / `display_name` |
 | `relationship.py` | 5 级关系判定、SQLite、回填、关系段渲染 | `RelationshipStore.observe/get/all/stats`、`render_relationship_block` |
@@ -34,7 +36,7 @@ backend/memewiki/              梗百科
 | `vision.py` | 图片识别、缓存、限频 | `VisionPipeline.describe(...)` |
 | `weather.py` | 持久化天气/温度/9 档时间 | `WeatherService.current()` / `summary()` / `environment()` |
 | `reply_format.py` | 清洗、短回复合并、气泡拆分 | `split_bubbles(...)` / `strip_silent_marker` |
-| `session_summary.py` | 会话压缩摘要（质量模型，token 探针触发） | `summarize_history(...)` |
+| `session_summary.py` | 日记/长期摘要（质量模型，token 探针触发） | `make_diary(...)` / `summarize_diaries(...)` |
 | `orchestrator.py` | L4：建上下文 → 调模型 → 清洗 → 归档 | `Orchestrator.chat(...)` |
 
 ## 3. 核心接口
@@ -73,9 +75,12 @@ prepare_context(messages, current_query=None, session_id=None,
 
 - `system_as_role=True` 时生成独立 system 消息；否则合并进首条 user
 - system 前缀冻结：人格、固定规则放 system；动态记忆、关系、知识、时间下沉到本轮 user 尾部
-- `session_summary` 是 token 探针触发后的早期对话摘要，动态注入，不写 system
-- 天气摘要拼进 C1 摘要；当前日期/天气/温度/时间档放在 D 尾部
-- 顺序：A system + B 群友档案 + C1 摘要/天气 → C2 历史 → D 当前发言人/环境 → E 当前句
+- `session_summary` 是早期日记/摘要，放 C1（system 稳定段），不按轮变化
+- 天气/环境只在 D 尾部注入；C1 只放早期日记/摘要，避免每天三次破坏前缀
+- 人物表 `[YY]` 统一由 `PeopleRegistry` 清洗；摘要/日记输入输出不保留已知昵称
+- C1 由日记/摘要生成；D2 是 history 中的最近原文；群聊与私聊按 scope 分开
+- 顺序：A system + B 群友档案 + C1 早期记忆 → D2 最近原文（history）→ 当前档案/关系/语义情景/世界知识 → 天气/当前句
+- 群聊不注入私聊摘要/原文；私聊可读群 C1/B，但不读群原文
 - 群友档案按 TTL 冻结；群历史在首次进群时从归档生成 C1，并按估算 token 在接近上限时总结
 - 默认人格优先加载 `config/persona_prompts/shelwell_system.txt` 作为固定 system；切换其他人格才回退动态编译
 - 具体拼接顺序和来源过滤见 [memory/README.md](memory/README.md) 与 `docs/memory_design.md`
@@ -89,6 +94,8 @@ archive_turn(user_msg, ai_msg, session_id="default",
 ```
 
 - 内部调用 `MemoryService.add_memory()`，落 JSONL、提交索引任务、更新关系
+- 归档同时写 `speaker_label`（`[YY]`）；`speaker_name` 保留原始昵称仅作审计
+- 语义提炼输入/输出统一 `[YY]`：主语必须是当前发言人，宾语中的人物也带 `[YY]`
 - `direct=None` 时：私聊算直接互动，群聊默认只算曝光
 - 沉默回合归档时 `ai_msg=""`，但 `direct` 仍可为 `True`
 
