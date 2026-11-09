@@ -38,7 +38,7 @@ cd E:\Shelwell
 | 脚本 | 验证 |
 |---|---|
 | `test_identity.py` | 全名、昵称、触发词、提示词一致性 |
-| `test_context_freeze.py` | system 前缀冻结、动态内容下沉到本轮 user |
+| `test_context_freeze.py` | system 前缀冻结、D2 历史、群/私聊 C1 准入 |
 | `test_silent.py` | `[SILENT]`/空输出 → 旁白，不进 AI 记忆 |
 | `test_reply_short.py` | 短回复合并、长回复切分、气泡上限 |
 

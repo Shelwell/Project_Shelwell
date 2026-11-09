@@ -75,11 +75,12 @@ prepare_context(messages, current_query=None, session_id=None,
 
 - `system_as_role=True` 时生成独立 system 消息；否则合并进首条 user
 - system 前缀冻结：人格、固定规则放 system；动态记忆、关系、知识、时间下沉到本轮 user 尾部
-- `session_summary` 是 token 探针触发后的早期对话摘要，动态注入，不写 system
-- 天气摘要拼进 C1 摘要；当前日期/天气/温度/时间档放在 D 尾部
+- `session_summary` 是早期日记/摘要，放 C1（system 稳定段），不按轮变化
+- 天气/环境只在 D 尾部注入；C1 只放早期日记/摘要，避免每天三次破坏前缀
 - 人物表 `[YY]` 统一由 `PeopleRegistry` 清洗；摘要/日记输入输出不保留已知昵称
-- C1 由日记生成；C2 保留最近原文；群聊与私聊日记按 scope 分开
-- 顺序：A system + B 群友档案 + C1 摘要/天气 → C2 历史 → D 当前发言人/环境 → E 当前句
+- C1 由日记/摘要生成；D2 是 history 中的最近原文；群聊与私聊按 scope 分开
+- 顺序：A system + B 群友档案 + C1 早期记忆 → D2 最近原文（history）→ 当前档案/关系/语义情景/世界知识 → 天气/当前句
+- 群聊不注入私聊摘要/原文；私聊可读群 C1/B，但不读群原文
 - 群友档案按 TTL 冻结；群历史在首次进群时从归档生成 C1，并按估算 token 在接近上限时总结
 - 默认人格优先加载 `config/persona_prompts/shelwell_system.txt` 作为固定 system；切换其他人格才回退动态编译
 - 具体拼接顺序和来源过滤见 [memory/README.md](memory/README.md) 与 `docs/memory_design.md`
